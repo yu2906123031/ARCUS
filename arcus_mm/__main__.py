@@ -10,6 +10,7 @@ from .api import PublicAPI, Live
 from .config import load
 from .engine import Engine
 from .models import Log, Ledger
+from .diagnostics import exception_locations
 
 def main(argv=None):
     p=argparse.ArgumentParser(description="Independent BTC-USD Arcus maker; default PAPER")
@@ -97,11 +98,14 @@ def main(argv=None):
     try: asyncio.run(execute())
     except (Exception,KeyboardInterrupt) as exc:
         # Avoid printing credentials or arbitrary response/request objects.
-        log("fatal",error_type=type(exc).__name__,reason=str(exc) if isinstance(exc,(ValueError,RuntimeError)) else "execution failed; inspect structured logs")
+        log("fatal",error_type=type(exc).__name__,reason=str(exc) if isinstance(exc,(ValueError,RuntimeError)) else "execution failed; inspect structured logs",locations=exception_locations(exc))
         from .restart import retryable, RETRY_EXIT
         halt=engines[-1].halt if engines else None
-        if retryable(exc,halt):
+        engine=engines[-1] if engines else None
+        verified=bool(engine and engine.rejection_restart_ready)
+        if not (engine and engine.operator_stop_requested) and retryable(exc,halt,verified_rejection=verified):
             main.retry_after=max(0,apis[-1].cooldown-time.monotonic()) if apis else 0
+            if verified:main.retry_after=max(main.retry_after,c.rejection_restart_seconds)
             return RETRY_EXIT
         return 1
     return 0

@@ -2,7 +2,7 @@ import unittest
 from dataclasses import replace
 from decimal import Decimal as D
 from arcus_mm.config import Config, load
-from arcus_mm.strategy import QuotePolicy, targets, safe_resting
+from arcus_mm.strategy import QuotePolicy, targets, safe_resting, fair_value, inventory_shift
 from arcus_mm.models import Order
 from tests.test_mm import market, book
 
@@ -48,6 +48,24 @@ class QuotePolicyTests(unittest.TestCase):
             self.assertTrue(reducing)
             self.assertTrue(all(q.price>book().bid if side=="SELL" else q.price<book().ask for q in reducing))
             self.assertTrue(safe_resting(c,D(100),position,book(),[Order(q,"test",q.qty,0) for q in qs]))
+
+    def test_microprice_direction_bound_and_zero_weight_baseline(self):
+        c=replace(Config(),microprice_weight="1",max_fair_shift_bps="1")
+        b=replace(book("99900","100100"),bid_size=D(9),ask_size=D(1))
+        f=fair_value(c,b)
+        self.assertEqual(f["microprice"],D(100080))
+        self.assertEqual(f["l1_imbalance"],D(".8"))
+        self.assertEqual(f["fair_shift_bps"],D(1))
+        self.assertEqual(fair_value(replace(c,microprice_weight="0"),b)["fair_price"],b.mid)
+        reverse=fair_value(c,replace(b,bid_size=D(1),ask_size=D(9)))
+        self.assertEqual(reverse["fair_shift_bps"],D(-1))
+
+    def test_cubic_skew_is_small_near_zero_and_stronger_near_cap(self):
+        c=replace(Config(),inventory_skew_bps="2",inventory_cubic_bps="1")
+        self.assertEqual(inventory_shift(c,D(".1")),D("-.201"))
+        self.assertEqual(inventory_shift(c,D(1)),D(-3))
+        self.assertEqual(inventory_shift(c,D(-1)),D(3))
+        self.assertEqual(inventory_shift(c,D(2)),D(-3))
 
     def test_duplicate_frames_do_not_build_volatility_history(self):
         policy=QuotePolicy();b=book();b.received=1

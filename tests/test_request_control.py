@@ -19,7 +19,7 @@ class RequestControl(unittest.IsolatedAsyncioTestCase):
     async def test_consecutive_limits_back_off_and_do_not_resend(self):
         self.api.http.post=AsyncMock(return_value=httpx.Response(429,json={}))
         with patch("arcus_mm.api.time.monotonic",return_value=100):
-            for expected in (5,10,20,30+10,60):
+            for expected in (10,20,40,60,60):
                 self.api.cooldown=0;self.live.last_mutation=0
                 with self.assertRaises(RateLimited):await self.live.post("cancelAllOrders",self.live.scope())
                 self.assertEqual(self.api.cooldown,100+expected)

@@ -14,11 +14,23 @@ class Config:
     bias_bps: str = "0"
     reprice_bps: str = "0.5"
     inventory_skew_bps: str = "0"
+    inventory_cubic_bps: str = "0"
+    microprice_weight: str = "0"
+    max_fair_shift_bps: str = "1"
     adaptive_spread: bool = False
     batch_quote_cancels: bool = False
     max_spread_bps: str = "8"
     max_reprice_bps: str = "2"
     volatility_multiplier: str = "2"
+    volatility_mode: str = "rms"
+    spread_decay_bps_per_second: str = "0"
+    markout_max_lag_seconds: float = 1
+    toxicity_enabled: bool = False
+    toxicity_window_seconds: float = 300
+    toxicity_min_samples: int = 10
+    toxicity_threshold_bps: str = "0.5"
+    toxicity_multiplier: str = "1"
+    toxicity_max_premium_bps: str = "2"
     exit_fee_reserve_fraction: str = "0"
     order_equity_fraction: str = "0.1"
     max_position_equity_fraction: str = "0.5"
@@ -41,6 +53,7 @@ class Config:
     quote_interval_seconds: float = 1
     account_refresh_seconds: float = 2
     confirmation_seconds: float = 8
+    rejection_restart_seconds: float = 60
     mutation_interval_seconds: float = 0.3
     log_dir: str = "mm_logs"
 
@@ -58,14 +71,24 @@ class Config:
         if D(self.reprice_bps) > D(self.spread_bps):
             raise ValueError("reprice_bps must not exceed spread_bps")
         if type(self.batch_quote_cancels) is not bool: raise ValueError("invalid batch_quote_cancels")
+        if type(self.toxicity_enabled) is not bool: raise ValueError("invalid toxicity_enabled")
+        if self.volatility_mode not in ("rms","ewma"): raise ValueError("invalid volatility_mode")
+        if type(self.toxicity_min_samples) is not int or not 3<=self.toxicity_min_samples<=1000:
+            raise ValueError("invalid toxicity_min_samples")
         if type(self.adaptive_spread) is not bool: raise ValueError("invalid adaptive_spread")
-        for name in ("inventory_skew_bps", "max_spread_bps", "max_reprice_bps", "volatility_multiplier", "exit_fee_reserve_fraction"):
+        for name in ("inventory_skew_bps", "inventory_cubic_bps", "microprice_weight", "max_fair_shift_bps", "max_spread_bps", "max_reprice_bps", "volatility_multiplier", "exit_fee_reserve_fraction", "spread_decay_bps_per_second", "toxicity_threshold_bps", "toxicity_multiplier", "toxicity_max_premium_bps"):
             value=D(getattr(self,name))
             if not value.is_finite() or value<0: raise ValueError("invalid "+name)
+        if D(self.inventory_cubic_bps)>3 or D(self.inventory_cubic_bps)+D(self.inventory_skew_bps)>6:
+            raise ValueError("invalid combined inventory skew")
+        if D(self.microprice_weight)>1 or D(self.max_fair_shift_bps)>3:
+            raise ValueError("invalid microprice controls")
         if D(self.inventory_skew_bps)>3: raise ValueError("inventory skew must be <=3 bps")
         if not D(self.spread_bps)<=D(self.max_spread_bps)<=50: raise ValueError("invalid maximum spread")
         if not D(self.reprice_bps)<=D(self.max_reprice_bps)<=D(self.max_spread_bps): raise ValueError("invalid maximum reprice")
         if not 0<D(self.volatility_multiplier)<=10: raise ValueError("invalid volatility multiplier")
+        if D(self.spread_decay_bps_per_second)>10 or D(self.toxicity_multiplier)>10 or D(self.toxicity_max_premium_bps)>20:
+            raise ValueError("invalid dynamic spread controls")
         if D(self.exit_fee_reserve_fraction)>1: raise ValueError("invalid exit fee reserve fraction")
         if self.capital_cap is not None:
             cap=D(self.capital_cap)
@@ -84,10 +107,12 @@ class Config:
         if D(self.exit_slippage_bps) > 500:
             raise ValueError("IOC slippage bound must be <=500 bps")
         for name in ("disconnect_seconds", "max_clock_skew_ms", "max_order_failures", "quote_interval_seconds",
-                     "account_refresh_seconds", "confirmation_seconds", "mutation_interval_seconds"):
+                     "account_refresh_seconds", "confirmation_seconds", "mutation_interval_seconds", "rejection_restart_seconds", "markout_max_lag_seconds", "toxicity_window_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not D(str(value)).is_finite() or value <= 0:
                 raise ValueError("invalid " + name)
+        if not 30<=self.rejection_restart_seconds<=3600:raise ValueError("invalid rejection restart delay")
+        if self.markout_max_lag_seconds>5 or not 30<=self.toxicity_window_seconds<=3600: raise ValueError("invalid quality window")
         if type(self.server_protection) is not bool: raise ValueError("invalid server_protection")
         for name in ("protection_seconds","protection_refresh_seconds"):
             value=getattr(self,name)

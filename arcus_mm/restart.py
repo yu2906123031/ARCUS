@@ -5,9 +5,11 @@ from .api import RateLimited, UncertainOrder, ClockUnavailable, RequestForbidden
 RETRY_EXIT=75
 TRANSIENT_HALTS={"disconnected, stale data, clock or incomplete subscriptions", "account state stale", "clock synchronization failed"}
 
-def retryable(exc, halt=None):
-    if halt and halt not in TRANSIENT_HALTS: return False
+def retryable(exc, halt=None, verified_rejection=False):
     if isinstance(exc,(KeyboardInterrupt,UncertainOrder,RequestForbidden)): return False
+    if verified_rejection and halt in ("consecutive request failures","consecutive order failures"):
+        return isinstance(exc,RuntimeError) and str(exc)=="risk stop: "+halt
+    if halt and halt not in TRANSIENT_HALTS: return False
     if isinstance(exc,(RateLimited,ClockUnavailable)): return True
     if halt in TRANSIENT_HALTS: return True
     reason=str(exc)

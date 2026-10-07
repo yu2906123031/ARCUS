@@ -14,6 +14,7 @@ class ExchangeError(RuntimeError): pass
 class UncertainOrder(ExchangeError): pass
 class RateLimited(ExchangeError): pass
 class RequestForbidden(ExchangeError): pass
+class UnclassifiedRejection(ExchangeError): pass
 class ClockUnavailable(ExchangeError): pass
 
 def daily_protection_quota(payload,server_seconds):
@@ -37,6 +38,7 @@ class PublicAPI:
         self.clock_checked=0.0
         self.last_stamp=0
         self.on_trades=lambda rows,book: None
+        self.on_book=lambda book:None
         self.on_private=lambda msg: None
         self.on_disconnect=lambda: None
         self.market=None
@@ -61,7 +63,7 @@ class PublicAPI:
                 parsed=float(value)/scale
                 return parsed if 0<=parsed<float("inf") else minimum
             except (ValueError,TypeError): return minimum
-        wait=max(minimum,min(60,5*2**(self.limit_streak-1)),delay(response.headers.get("Retry-After",minimum)),delay(payload.get("retryAfterMs",minimum*1000),1000))
+        wait=max(minimum,min(60,minimum*2**(self.limit_streak-1)),delay(response.headers.get("Retry-After",minimum)),delay(payload.get("retryAfterMs",minimum*1000),1000))
         self.cooldown=max(self.cooldown,now+wait)
         return wait,payload
 
@@ -104,6 +106,9 @@ class PublicAPI:
             mono_before=time.monotonic_ns()
             try:
                 raw=await asyncio.wait_for(self.get("/v1/time"),timeout=8) # Complete cold TLS connections; still reject slow RTT samples.
+            except RateLimited:
+                self.clock_pending=True
+                raise
             except (httpx.TransportError, httpx.HTTPStatusError, asyncio.TimeoutError, ExchangeError):
                 self.log("clock_sample_discarded",sample=attempt+1,reason="request_timeout_or_error")
                 continue
@@ -185,6 +190,7 @@ class PublicAPI:
                             b=Book.parse(msg["contents"])
                             if self.book and b.timestamp_us<self.book.timestamp_us: continue
                             self.book=b
+                            if self.fresh():self.on_book(b)
                         elif channel=="trades":
                             if self.book and self.fresh(): self.on_trades(msg["contents"],self.book)
                         else: self.on_private(msg)
@@ -225,6 +231,7 @@ class Live:
         api.channels |= {"orders","userFills"}
         api.on_private=self.event
         self.orders={}; self.history={}; self.seen=set(); self.fill_journal={}
+        self.on_fill=None
         self.fill_cursor=time.time_ns()//1000
         self.last_fill_time=-1
         self.started_us=self.api.stamp()//1000
@@ -241,6 +248,7 @@ class Live:
         self.free_collateral=D(0)
         self.resume_info=None
         self.leverage_confirmed=False
+        self.leverage_denial_pending=False
         self.protection_cooldown=0.0
         self.protection_block_reason=None
         self.protection_retry_at_ms=None
@@ -249,6 +257,7 @@ class Live:
         self.pool_ready={}
         self.forbidden_actions={}
         self.order_revision=0
+        self.bulk_cancel_disabled_until=0.0
 
     def scope(self): return dict(address=self.signer.address,accountIndex=self.signer.account_index)
 
@@ -290,7 +299,7 @@ class Live:
                 self.fatal="uncertain mutation transport result: "+action
                 raise UncertainOrder(self.fatal) from None
         if r.status_code==429:
-            wait,payload=self.api.rate_limit_wait(r)
+            wait,payload=self.api.rate_limit_wait(r,minimum=10 if action in ("cancelOrder","cancelAllOrders") else 5)
             quota=daily_protection_quota(payload,time.time()+self.api.offset_ns/1e9) if action=="scheduleCancel" else None
             if quota is not None:
                 quota_wait,reset=quota
@@ -309,6 +318,10 @@ class Live:
                 wait,_=self.api.rate_limit_wait(r,minimum=30)
                 self.log("rate_limit_pause",action=action,retry_seconds=wait)
                 raise RateLimited("explicit temporary ban: "+action)
+            if details["rejection_class"] not in ("account_or_subaccount_permission","api_key_status","signature_or_timestamp"):
+                if action in ("cancelOrder","cancelAllOrders"):
+                    self.api.rate_limit_wait(r,minimum=10)
+                raise UnclassifiedRejection("unclassified HTTP 403: "+action)
             exc=RequestForbidden("exchange request forbidden: "+action+" ("+details["rejection_class"]+")")
             self.forbidden_actions[action]=exc
             self.fatal=str(exc)
@@ -426,17 +439,50 @@ class Live:
                  resume_since_us=resume.since_us if resume is not None else None,
                  account_index=self.signer.account_index,live_orders_sent=False)
 
+    async def leverage_state(self):
+        rows=(await self.api.get("/v1/leverages",self.scope()))["leverages"]
+        matches=[r for r in rows if int(r["marketId"])==self.api.market.id]
+        if len(matches)!=1:raise ExchangeError("cannot verify unique market leverage state")
+        row=matches[0]
+        leverage=number(row["leverage"])
+        mode=row["marginMode"]
+        if leverage<=0 or leverage!=leverage.to_integral_value() or mode not in ("CROSS","ISOLATED"):
+            raise ExchangeError("invalid market leverage state")
+        if "isolated" in row and (type(row["isolated"]) is not bool or row["isolated"]!=(mode=="ISOLATED")):
+            raise ExchangeError("inconsistent market margin mode")
+        return leverage,mode
+
     async def enable(self):
+        if self.fatal:raise ExchangeError(self.fatal)
         if not self.leverage_confirmed:
-            body=dict(self.scope(),marketId=self.api.market.id,leverage=self.c.leverage_cap,isolated=False)
-            await self.post("setLeverage",body)
-            deadline=time.monotonic()+self.c.confirmation_seconds
-            while True:
-                rows=(await self.api.get("/v1/leverages",self.scope()))["leverages"]
-                row=next(x for x in rows if int(x["marketId"])==self.api.market.id)
-                if row["leverage"]==self.c.leverage_cap and row["marginMode"]=="CROSS": break
-                if time.monotonic()>deadline: raise ExchangeError("leverage change not confirmed")
-                await asyncio.sleep(.25)
+            expected=(D(self.c.leverage_cap),"CROSS")
+            current=await self.leverage_state()
+            if current==expected:
+                self.log("leverage_adopted",leverage=self.c.leverage_cap,margin_mode="CROSS",write_sent=False)
+            else:
+                if self.leverage_denial_pending:
+                    self.fatal="leverage setup rejected: expected "+str(self.c.leverage_cap)+"x CROSS; observed "+str(current[0])+"x "+current[1]
+                    raise ExchangeError(self.fatal)
+                body=dict(self.scope(),marketId=self.api.market.id,leverage=self.c.leverage_cap,isolated=False)
+                try:
+                    await self.post("setLeverage",body)
+                except UnclassifiedRejection:
+                    self.leverage_denial_pending=True
+                    # Never repeat this write just because its denial is unclassified.
+                    current=await self.leverage_state()
+                    if current!=expected:
+                        self.fatal="leverage setup rejected: expected "+str(self.c.leverage_cap)+"x CROSS; observed "+str(current[0])+"x "+current[1]
+                        self.log("leverage_setup_blocked",expected_leverage=self.c.leverage_cap,actual_leverage=current[0],actual_margin_mode=current[1])
+                        raise ExchangeError(self.fatal) from None
+                    self.log("leverage_setup_recovered",leverage=self.c.leverage_cap,margin_mode="CROSS",reason="verified_after_denial")
+                else:
+                    deadline=time.monotonic()+self.c.confirmation_seconds
+                    while await self.leverage_state()!=expected:
+                        if time.monotonic()>deadline:
+                            self.fatal="leverage change not confirmed"
+                            raise UncertainOrder(self.fatal)
+                        await asyncio.sleep(.25)
+                    self.log("leverage_confirmed",leverage=self.c.leverage_cap,margin_mode="CROSS")
             self.leverage_confirmed=True
         if self.c.server_protection:
             await self.arm()
@@ -538,6 +584,10 @@ class Live:
         self.last_fill_time=max(stamp,self.last_fill_time)
         self.log("fill",trade_id=f["tradeId"],order_id=f["orderId"],side=f["side"],quantity=f["size"],
                  price=f["price"],fee=f["fee"],role=f["role"],position=self.ledger.qty,realized_pnl=self.ledger.realized)
+        if self.on_fill and f["role"]=="MAKER":
+            order=next((o for o in self.history.values() if o.order_id==f["orderId"]),None)
+            self.on_fill(dict(trade_id=str(f["tradeId"]),side=f["side"],quantity=f["size"],price=f["price"],fee=f["fee"],
+                              maker=True,timestamp_us=stamp,spread_bps=order.quote.spread_bps if order else None))
         if f.get("liquidation"): self.fatal="forced liquidation or ADL"
 
     def update_order(self,row):
@@ -546,6 +596,12 @@ class Live:
         o=self.history.get(cid) or next((x for x in self.history.values() if x.order_id==row["orderId"]),None)
         if not o:
             self.fatal="unmanaged order appeared on dedicated subaccount"
+            return
+        if o.order_id and o.order_id!=row["orderId"]:
+            self.fatal="owned order identity mismatch"
+            return
+        if o.status in TERMINAL and row["status"] not in TERMINAL:
+            self.log("order_state_ignored",client_id=o.client_id,reason="terminal_state_regression")
             return
         seq=int(row.get("sequenceNumber",-1))
         if seq>=0 and seq<=o.sequence: return
@@ -581,7 +637,7 @@ class Live:
                     if o.status in TERMINAL or (not terminal and o.status=="OPEN"): return
                 except (ExchangeError,asyncio.TimeoutError):
                     self.log("order_confirmation_read_failed",client_id=o.client_id)
-                next_poll=time.monotonic()+.5
+                next_poll=max(time.monotonic()+.5,self.api.cooldown)
             await asyncio.sleep(.05)
         self.fatal="order lifecycle confirmation timed out"
         raise UncertainOrder(self.fatal)
@@ -624,28 +680,77 @@ class Live:
     async def cancel(self,slot):
         o=self.orders.get(slot)
         if not o: return
-        body=dict(self.scope(),marketId=self.api.market.id,kind="clientId",clientId=o.client_id)
-        self.log("cancel_request",client_id=o.client_id)
-        await self.post("cancelOrder",body)
-        await self.confirmed(o,terminal=True)
+        if not o.order_id: raise UncertainOrder("cannot cancel an unacknowledged order without confirming its identity")
+        await self.cancel_owned_individually([dict(clientId=o.client_id,orderId=o.order_id,marketId=self.api.market.id)])
 
-    async def cancel_all(self):
-        await self.post("cancelAllOrders",dict(self.scope(),marketId=self.api.market.id))
-        # With a disconnected WS, REST is a fallback; an empty open-order list
-        # alone cannot prove that an in-flight place/cancel has completed.
+    async def owned_open_orders(self):
+        rows=(await self.api.get("/v1/openOrders",self.scope()))["orders"]
+        for row in rows:
+            order=self.history.get(row.get("clientId"))
+            if (row.get("marketId")!=self.api.market.id or order is None or not row.get("orderId") or
+                    (order.order_id and order.order_id!=row["orderId"])):
+                raise ExchangeError("cleanup contains orders not proven to belong to this bot")
+            if not order.order_id: order.order_id=row["orderId"]
+        return rows
+
+    async def verify_cleanup(self):
         deadline=time.monotonic()+self.c.confirmation_seconds
         while time.monotonic()<deadline:
+            rows=await self.owned_open_orders()
             pending=False
-            for o in list(self.orders.values()):
-                if not o.order_id: pending=True; continue
-                raw=await self.api.get("/v1/order/"+o.order_id,self.scope())
-                row=raw.get("order",raw)
-                if row["status"] in TERMINAL:
-                    o.status=row["status"]; self.orders.pop(o.quote.slot,None)
+            for order in list(self.orders.values()):
+                if not order.order_id:
+                    raise UncertainOrder("cleanup cannot prove an unacknowledged order terminal")
+                raw=await self.api.get("/v1/order/"+order.order_id,self.scope())
+                state=raw.get("order",raw)
+                if state.get("orderId")==order.order_id and state.get("status") in TERMINAL:
+                    order.status=state["status"]
+                    if self.orders.get(order.quote.slot) is order: self.orders.pop(order.quote.slot,None)
                 else: pending=True
-            rows=(await self.api.get("/v1/openOrders",dict(self.scope(),market=self.c.market)))["orders"]
             if not rows and not pending:
                 self.log("cancel_all_confirmed")
                 return
             await asyncio.sleep(.25)
-        raise UncertainOrder("cancel-all did not reach confirmed terminal state; dead man's switch remains armed")
+        raise UncertainOrder("cancel-all did not reach confirmed terminal state; cleanup remains unverified")
+
+    async def cancel_owned_individually(self,rows):
+        for row in rows:
+            order=self.history[row["clientId"]]
+            if order.status in TERMINAL: continue
+            self.log("cancel_request",client_id=order.client_id)
+            try:
+                await self.post("cancelOrder",dict(self.scope(),marketId=self.api.market.id,kind="clientId",clientId=order.client_id))
+            except (UnclassifiedRejection,RateLimited):
+                # A fill can race the rejection. Verify the original order before any retry.
+                raw=await self.api.get("/v1/order/"+order.order_id,self.scope())
+                state=raw.get("order",raw)
+                if state.get("orderId")!=order.order_id or state.get("status") not in TERMINAL:
+                    raise RateLimited("individual cleanup waiting for cancel cooldown")
+                order.status=state["status"]
+                if self.orders.get(order.quote.slot) is order: self.orders.pop(order.quote.slot,None)
+                continue
+            await self.confirmed(order,terminal=True)
+
+    async def cancel_all(self):
+        rows=await self.owned_open_orders()
+        if not rows:
+            await self.verify_cleanup()
+            self.log("cancel_all_not_needed")
+            return
+        # Ordinary sessions have one or two proven orders. Account-wide cancellation is optional.
+        if len(rows)<=2 or time.monotonic()<self.bulk_cancel_disabled_until:
+            self.log("cancel_cleanup_mode",cleanup_mode="individual",count=len(rows))
+            await self.cancel_owned_individually(rows)
+            await self.verify_cleanup()
+            return
+        try:
+            await self.post("cancelAllOrders",dict(self.scope(),marketId=self.api.market.id))
+        except (UnclassifiedRejection,RateLimited) as exc:
+            self.bulk_cancel_disabled_until=time.monotonic()+60
+            self.log("cancel_all_fallback",reason=type(exc).__name__)
+            rows=await self.owned_open_orders()
+            if rows: await self.cancel_owned_individually(rows)
+            await self.verify_cleanup()
+            self.log("cancel_all_recovered",reason="verified_after_bulk_rejection")
+            return
+        await self.verify_cleanup()

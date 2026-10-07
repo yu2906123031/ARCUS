@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal as D
 from pathlib import Path
 
-ALERTS={"ws_disconnected","halt","fatal","account_sync_wait","mutation_recovery_failed",
+ALERTS={"execution_error","cleanup_error","ws_disconnected","halt","fatal","account_sync_wait","mutation_recovery_failed",
         "software_cancel_failed","protection_quota_exhausted","protection_retained","clock_unavailable"}
 
 def summarize(path):
@@ -17,6 +17,7 @@ def summarize(path):
                 row=json.loads(line)
                 stamp=int(row["time_ns"])
                 event=row["event"]
+                if not isinstance(event,str):raise ValueError()
                 hour=datetime.fromtimestamp(stamp/1e9,timezone.utc).strftime("%Y-%m-%dT%H:00:00Z")
             except (ValueError,KeyError,TypeError,OverflowError):
                 invalid+=1;continue
@@ -24,7 +25,7 @@ def summarize(path):
             key=(session,hour)
             h=hours.setdefault(key,dict(session=session,hour_utc=hour,fill_count=0,volume_usd=D(0),
                 maker_volume_usd=D(0),fees_usd=D(0),cancel_requests=0,confirmed_paper_cancels=0,
-                alerts=Counter(),last_net_pnl_usd=None,last_wear_per_dollar=None))
+                alerts=Counter(),last_net_pnl_usd=None,last_wear_per_dollar=None,markout_stats={},markout_missing=0,markout_skipped=0))
             if event=="fill":
                 try:
                     quantity=D(str(row["quantity"]));price=D(str(row["price"]));fee=D(str(row["fee"]))
@@ -32,6 +33,18 @@ def summarize(path):
                 except (ValueError,KeyError,ArithmeticError): invalid+=1;continue
                 h["fill_count"]+=1;h["volume_usd"]+=quantity*price;h["fees_usd"]+=fee
                 if row.get("maker") is True or row.get("role")=="MAKER": h["maker_volume_usd"]+=quantity*price
+            if event=="markout":
+                try:
+                    side=row["side"];horizon=int(row["horizon_seconds"]);bucket=str(row["spread_bucket"])
+                    notional=D(str(row["notional_usd"]))
+                    values={name:D(str(row[name])) for name in ("markout_bps","mid_move_bps","net_markout_bps","sample_lag_seconds")}
+                    if side not in ("BUY","SELL") or horizon not in (1,3,5,10,30) or not notional.is_finite() or notional<=0 or not all(n.is_finite() for n in values.values()) or values["sample_lag_seconds"]<0:raise ValueError()
+                except (KeyError,ValueError,TypeError,ArithmeticError):invalid+=1;continue
+                group=h["markout_stats"].setdefault((side,horizon,bucket),dict(side=side,horizon_seconds=horizon,spread_bucket=bucket,samples=0,notional_usd=D(0),sums={name:D(0) for name in values}))
+                group["samples"]+=1;group["notional_usd"]+=notional
+                for name,value in values.items():group["sums"][name]+=value*notional
+            if event=="markout_missing":h["markout_missing"]+=1
+            if event=="markout_skipped":h["markout_skipped"]+=1
             if event=="cancel_request": h["cancel_requests"]+=1
             if event=="cancel": h["confirmed_paper_cancels"]+=1
             if event in ALERTS: h["alerts"][event]+=1
@@ -47,9 +60,14 @@ def summarize(path):
         volume=h["volume_usd"];maker=h["maker_volume_usd"]
         h["maker_volume_pct"]=maker/volume*100 if volume else None
         h["cancel_requests_per_1000_maker_usd"]=D(h["cancel_requests"])*1000/maker if maker else None
+        h["markouts"]=[]
+        for _,group in sorted(h.pop("markout_stats").items()):
+            sums=group.pop("sums")
+            group.update({"mean_"+name:value/group["notional_usd"] for name,value in sums.items()})
+            h["markouts"].append(group)
         result.append(h)
     return dict(source=Path(path).name,invalid_lines_or_records=invalid,hours=result,
-        caveat="Fill totals are per UTC hour. Last PnL and wear are cumulative within the recorded session, not hourly PnL. Funding is not included. Live cancel requests are not confirmations. Alerts are logged events, not external notifications.")
+        caveat="Fill totals are per UTC hour. Last PnL and wear are cumulative within the recorded session, not hourly PnL. Funding is not included. Live cancel requests are not confirmations. Alerts are logged events, not external notifications. Markouts are not realized PnL; horizons overlap and must not be summed. Missing samples are excluded, not zero.")
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)

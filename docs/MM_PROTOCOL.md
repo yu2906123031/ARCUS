@@ -60,3 +60,6 @@ scheduleCancel 的 time 是绝对微秒，提前 5 秒–5 分钟；marketId 限
 tickTiers 的增量字段是 tick，upToPrice 是不包含的上界；签名仍除以基础 tickSize。市场不 ONLINE 或精度变化时停止。杠杆设置为配置值并通过 /v1/leverages 确认，默认及上限 3，不采用市场最大杠杆。
 
 时钟修复：维持原 5 秒阈值，每轮获取多个样本，丢弃超时和高 RTT 响应并采用最快有效样本。全部样本无效时暂停开新单并撤单，恢复可靠采样后继续；持续无效按断线时限停止。检测本地 wall clock 与 monotonic 时间差跳变时立即停止。此为客户端测量改进，不改变官方签名协议。
+
+
+Startup leverage: read `/v1/leverages` first. Reuse the verified configured leverage with CROSS mode; write `setLeverage` only when a change is needed, then confirm by reading. Unclassified 403 is verified by a read and is never blindly resent. The live configuration remains 5x.

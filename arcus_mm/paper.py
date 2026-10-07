@@ -8,6 +8,8 @@ class Paper:
         self.c,self.market,self.ledger,self.log = c,market,ledger,log
         self.maker_fee,self.taker_fee = maker_fee,taker_fee
         self.orders,self.seen = {},set()
+        self.on_fill=None
+        self.fill_sequence=0
     async def place(self,quote,book,ioc=False):
         if ioc:
             self.log("order",side=quote.side,price=quote.price,quantity=quote.qty,reduce_only=True,tif="IOC")
@@ -27,10 +29,14 @@ class Paper:
         if o: self.log("cancel",client_id=o.client_id)
     async def cancel_all(self):
         for slot in list(self.orders): await self.cancel(slot)
-    def fill(self,quote,qty,px,maker):
+    def fill(self,quote,qty,px,maker,timestamp_us=None,trade_id=None):
         fee = qty*px*(self.maker_fee if maker else self.taker_fee)
         self.ledger.fill(quote.side,qty,px,fee,maker)
         self.log("fill",side=quote.side,quantity=qty,price=px,fee=fee,maker=maker,position=self.ledger.qty,realized_pnl=self.ledger.realized)
+        self.fill_sequence+=1
+        if self.on_fill and maker and timestamp_us is not None:
+            self.on_fill(dict(trade_id=str(trade_id)+":"+str(self.fill_sequence),side=quote.side,quantity=qty,price=px,fee=fee,
+                              maker=True,timestamp_us=timestamp_us,spread_bps=quote.spread_bps))
     def trades(self,rows,book):
         # No taker-side field exists in the official public-trades schema.
         # Strict trade-through plus opposite BBO avoids invented fills.
@@ -54,6 +60,6 @@ class Paper:
                     qty = min(qty,abs(self.ledger.qty))
                 if qty<=0: continue
                 # Limit execution is equal/worse than contemporaneous opponent BBO.
-                self.fill(o.quote,qty,o.quote.price,True)
+                self.fill(o.quote,qty,o.quote.price,True,timestamp_us=stamp,trade_id=key)
                 available -= qty; o.remaining -= qty
                 if not o.remaining: self.orders.pop(slot,None)

@@ -5,7 +5,7 @@ import asyncio
 from dataclasses import replace
 from decimal import Decimal as D
 from arcus_mm.restart import supervise,retryable,RETRY_EXIT
-from arcus_mm.api import daily_protection_quota,RateLimited,ExchangeError,UncertainOrder,PublicAPI,Live
+from arcus_mm.api import daily_protection_quota,RateLimited,ExchangeError,UncertainOrder,PublicAPI,Live,RequestForbidden
 from arcus_mm.config import Config
 from arcus_mm.models import Ledger,Quote
 from arcus_mm.engine import Engine
@@ -89,7 +89,7 @@ class RateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(e.trading_enabled)
     async def test_protection_retry_does_not_repeat_leverage_change(self):
         async def post(action,body):
-            if action=="scheduleCancel" and self.live.post.await_count==2:raise RateLimited("429")
+            if action=="scheduleCancel" and self.live.post.await_count==1:raise RateLimited("429")
             return {}
         self.live.post=AsyncMock(side_effect=post)
         self.api.get=AsyncMock(return_value={"leverages":[{"marketId":1,"leverage":3,"marginMode":"CROSS"}]})
@@ -98,7 +98,7 @@ class RateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.live.arm_time,0)
         await self.live.enable()
         self.assertGreater(self.live.arm_time,0)
-        self.assertEqual([c.args[0] for c in self.live.post.await_args_list],["setLeverage","scheduleCancel","scheduleCancel"])
+        self.assertEqual([c.args[0] for c in self.live.post.await_args_list],["scheduleCancel","scheduleCancel"])
 
     async def test_daily_quota_defers_protection_only_and_keeps_cancel_available(self):
         self.api.http.post=AsyncMock(side_effect=[httpx.Response(429,json={"error":"schedule cancel trigger limit reached (10 per UTC day)"}),httpx.Response(200,json={})])
@@ -134,3 +134,44 @@ class ProtectionQuotaParsing(unittest.TestCase):
         self.assertEqual(result,(7,86400))
     def test_ordinary_limit_does_not_become_daily_quota(self):
         self.assertIsNone(daily_protection_quota({"error":"rate limit reached"},1234))
+
+class VerifiedDenialRestart(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_requires_full_cleanup_and_reconciliation_proof(self):
+        from types import SimpleNamespace
+        api=PublicAPI(Config(),log);e=Engine(api.c,api,log,live=True,auto_resume=True)
+        e.halt="consecutive request failures";e.last_failure_unclassified=True;e.last_clear_revision=2
+        e.venue=SimpleNamespace(fatal=None,orders={},order_revision=2,account_qty=D(0),last_account_seq=10,last_fill_seq=10)
+        try:
+            self.assertTrue(e.rejection_restart_safe(True))
+            self.assertFalse(e.rejection_restart_safe(False))
+            for field,value in (("orders",{"pending":object()}),("fatal","permission"),("order_revision",3),("last_fill_seq",11),("account_qty",D(1))):
+                old=getattr(e.venue,field);setattr(e.venue,field,value)
+                self.assertFalse(e.rejection_restart_safe(True));setattr(e.venue,field,old)
+            e.trip("operator stop");self.assertFalse(e.rejection_restart_safe(True))
+        finally:await api.http.aclose()
+    def test_verified_denial_never_overrides_risk_unknown_or_permission_stops(self):
+        halt="consecutive request failures";exc=RuntimeError("risk stop: "+halt)
+        self.assertFalse(retryable(exc,halt));self.assertTrue(retryable(exc,halt,verified_rejection=True))
+        for error in (RequestForbidden("403"),UncertainOrder("unknown"),TypeError("bug"),KeyboardInterrupt()):
+            self.assertFalse(retryable(error,halt,verified_rejection=True))
+        self.assertFalse(retryable(RuntimeError("risk stop: floating loss stop reached"),"floating loss stop reached",verified_rejection=True))
+    def test_denial_delay_and_manual_interrupt(self):
+        wait=Mock();self.assertEqual(supervise(Mock(side_effect=[75,0]),sleep=wait,clock=lambda:0,report=Mock(),cooldown=lambda:60),0)
+        wait.assert_called_once_with(60)
+        self.assertEqual(supervise(Mock(return_value=75),sleep=Mock(side_effect=KeyboardInterrupt),report=Mock(),cooldown=lambda:60),0)
+
+    async def test_live_run_marks_verified_denial_for_delayed_restart(self):
+        from arcus_mm.api import UnclassifiedRejection
+        c=replace(Config(),server_protection=False,quote_interval_seconds=.001,max_order_failures=2)
+        api=PublicAPI(c,log);api.market=market();api.book=book();api.fresh=lambda:True;api.clock_checked=time.monotonic()
+        e=Engine(c,api,log,live=True,auto_resume=True);e.taker_fee=D(0)
+        with credentials():e.venue=Live(api,e.ledger,log)
+        e.venue.equity=D(100);e.venue.enable=AsyncMock();e.venue.reconcile=AsyncMock(return_value=True)
+        e.venue.cancel_all=AsyncMock();e.setup=AsyncMock()
+        async def idle():await asyncio.Event().wait()
+        api.stream=idle;e.watchdog=idle
+        e.cycle=AsyncMock(side_effect=UnclassifiedRejection("unclassified HTTP 403: placeOrder"))
+        reason=await e.run()
+        self.assertEqual(reason,"consecutive request failures")
+        self.assertTrue(e.rejection_restart_ready)
+        self.assertEqual(e.cycle.await_count,2);e.venue.cancel_all.assert_awaited_once()

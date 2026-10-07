@@ -29,5 +29,16 @@
   "capital_cap": "100",
   "account_refresh_seconds": 1,
   "log_dir": "mm_logs/live-BTC-USD",
-  "batch_quote_cancels": true
+  "batch_quote_cancels": true,
+  "microprice_weight": "0.5",
+  "max_fair_shift_bps": "1",
+  "inventory_cubic_bps": "1",
+  "volatility_mode": "ewma",
+  "spread_decay_bps_per_second": "0.1",
+  "toxicity_enabled": true,
+  "toxicity_min_samples": 10,
+  "toxicity_threshold_bps": "0.5",
+  "toxicity_multiplier": "1",
+  "toxicity_max_premium_bps": "2",
+  "rejection_restart_seconds": 60
 }

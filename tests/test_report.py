@@ -23,3 +23,28 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(second["last_net_pnl_usd"],D(".7"))
         self.assertIsNone(second["cancel_requests_per_1000_maker_usd"])
         self.assertNotIn("must not appear",json.dumps(r,default=str))
+
+    def test_markouts_are_weighted_separated_and_missing_excluded(self):
+        common=dict(time_ns=1,event="markout",side="BUY",horizon_seconds=5,spread_bucket="1-2",sample_lag_seconds=".2")
+        rows=[dict(common,notional_usd="10",markout_bps="2",mid_move_bps="-1",net_markout_bps="1"),
+              dict(common,notional_usd="30",markout_bps="6",mid_move_bps="-3",net_markout_bps="5"),
+              dict(common,side="SELL",notional_usd="20",markout_bps="3",mid_move_bps="2",net_markout_bps="3"),
+              dict(common,notional_usd="1",markout_bps="NaN",mid_move_bps="0",net_markout_bps="0"),
+              dict(time_ns=2,event="markout_missing"),dict(time_ns=3,event="markout_skipped")]
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root,"log.jsonl");p.write_text("\n".join(json.dumps(r) for r in rows),encoding="utf-8")
+            result=summarize(p)
+        hour=result["hours"][0];buy,sell=hour["markouts"]
+        self.assertEqual(result["invalid_lines_or_records"],1)
+        self.assertEqual(buy["samples"],2);self.assertEqual(buy["mean_markout_bps"],D(5))
+        self.assertEqual(buy["mean_mid_move_bps"],D("-2.5"));self.assertEqual(buy["mean_net_markout_bps"],D(4))
+        self.assertEqual(sell["samples"],1);self.assertEqual(hour["markout_missing"],1)
+        self.assertEqual(hour["markout_skipped"],1)
+
+    def test_malformed_event_and_negative_delay_are_rejected(self):
+        rows=[dict(time_ns=1,event=["fill"]),dict(time_ns=1,event={"bad":1}),dict(time_ns=1,event="markout",side="BUY",horizon_seconds=5,spread_bucket="1-2",notional_usd="10",markout_bps="0",mid_move_bps="0",net_markout_bps="0",sample_lag_seconds="-1")]
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root,"log.jsonl");p.write_text("\n".join(json.dumps(r) for r in rows),encoding="utf-8")
+            result=summarize(p)
+        self.assertEqual(result["invalid_lines_or_records"],3)
+        self.assertTrue(all(not hour["markouts"] for hour in result["hours"]))

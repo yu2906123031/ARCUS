@@ -76,6 +76,7 @@ class Quote:
     price: D
     qty: D
     reduce: bool = False
+    spread_bps: D | None = None
 
 @dataclass
 class Order:
@@ -126,7 +127,7 @@ class Log:
         self.mode = mode
         self.recent = deque(maxlen=200)
     def __call__(self, event, **values):
-        line = json.dumps(dict(time_ns=time.time_ns(), mode=self.mode, event=event, **values), default=str, ensure_ascii=False)
+        line = json.dumps({**values, "time_ns":time.time_ns(), "mode":self.mode, "event":event}, default=str, ensure_ascii=False)
         self.recent.append(json.loads(line))
         print(line, flush=True)
         with self.path.open("a", encoding="utf-8") as f: f.write(line + "\n")

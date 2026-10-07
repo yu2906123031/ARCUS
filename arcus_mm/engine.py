@@ -1,9 +1,11 @@
 import asyncio
 import time
 from decimal import Decimal as D
-from .api import ExchangeError, UncertainOrder, ClockUnavailable, Live, RateLimited, RequestForbidden
+from .api import ExchangeError, UncertainOrder, ClockUnavailable, Live, RateLimited, RequestForbidden, UnclassifiedRejection
 from .models import BPS, Book, Ledger, Quote
 from .paper import Paper
+from .diagnostics import exception_locations
+from .quality import Markouts
 from .strategy import targets, replace_needed, safe_resting, QuotePolicy
 
 class Engine:
@@ -16,6 +18,9 @@ class Engine:
         self.ledger=Ledger(c.paper_equity)
         self.venue=None
         self.halt=None
+        self.operator_stop_requested=False
+        self.last_failure_unclassified=False
+        self.rejection_restart_ready=False
         self.flatten=False
         self.last_account=0.0
         self.stop=asyncio.Event()
@@ -32,11 +37,34 @@ class Engine:
         self.unsynced_since=None
         self.clock_task=None
         self.quote_policy=QuotePolicy()
+        self.quality=Markouts(c,log)
+        self.quality_start_us=0
+
+    def observe_book(self,book):
+        self.quality.observe(book)
+        self.quote_policy.observe(self.c,book)
+
+    def observe_fill(self,fill):
+        if self.live and (not self.trading_enabled or fill["timestamp_us"]<self.quality_start_us):return
+        self.quality.add_fill(fill)
+
+    def attach_observers(self,set_feed=True):
+        self.venue.on_fill=self.observe_fill
+        self.quality_start_us=self.api.stamp()//1000 if self.live else 0
+        if set_feed:self.api.on_book=self.observe_book
 
     def trip(self,reason,flatten=False):
+        if reason=="operator stop":self.operator_stop_requested=True
         if not self.halt: self.log("halt",reason=reason,flatten=flatten)
         self.halt=self.halt or reason
         self.flatten |= flatten
+
+    def rejection_restart_safe(self,synced):
+        return bool(self.live and self.auto_resume and synced and not self.operator_stop_requested and
+                    self.last_failure_unclassified and self.halt in ("consecutive request failures","consecutive order failures") and
+                    not self.flatten and not self.venue.fatal and not self.venue.orders and
+                    self.last_clear_revision==self.venue.order_revision and
+                    self.venue.account_qty==self.ledger.qty and self.venue.last_account_seq>=self.venue.last_fill_seq)
 
     async def cancel_all(self):
         async with self.cancel_lock:
@@ -73,6 +101,7 @@ class Engine:
         else:
             self.venue=Paper(self.c,market,self.ledger,self.log,maker,taker)
             self.api.on_trades=self.venue.trades
+        self.attach_observers()
         self.log("session",strategy=self.c.strategy,market=self.c.market,leverage_cap=self.c.leverage_cap,
                  maker_fee=maker,taker_fee=taker,config=self.c.__dict__)
 
@@ -135,9 +164,9 @@ class Engine:
     async def refresh_clock(self):
         try:
             await self.api.clock()
-        except ClockUnavailable:
+        except (ClockUnavailable,RateLimited) as exc:
             self.api.clock_pending=True
-            self.log("quote_pause",reason="clock_unavailable")
+            self.log("quote_pause",reason="clock_rate_limited" if isinstance(exc,RateLimited) else "clock_unavailable")
             if self.venue.orders: await self.cancel_all()
         except Exception as exc:
             self.api.clock_pending=True
@@ -172,7 +201,8 @@ class Engine:
                 synced=await self.venue.reconcile(); self.last_account=now
             else:
                 synced=self.venue.account_qty==self.ledger.qty and self.venue.last_account_seq>=self.venue.last_fill_seq
-            equity=min(equity,self.venue.equity)
+            # Reconcile may replay delayed fills and replace ledger cost basis.
+            equity=min(self.ledger.equity(book.mid),self.venue.equity)
             if now-self.venue.account_time>self.c.account_refresh_seconds+8:
                 self.trip("account state stale")
             if self.c.server_protection and now-self.venue.arm_time>=self.c.protection_refresh_seconds: await self.venue.arm()
@@ -192,8 +222,8 @@ class Engine:
             await self.cancel_all()
             # Any fills while cancels were pending change the next target budget.
             return
-        quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)))
-        desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty)}
+        quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)),self.quality.toxicity(now))
+        desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,self.quote_policy.side_spreads)}
         cancelled_quotes=False
         for slot,o in list(self.venue.orders.items()):
             q=desired.get(slot)
@@ -235,6 +265,7 @@ class Engine:
         enabled=not self.live
         self.trading_enabled=enabled
         cancelled=False
+        primary_error=None
         try:
             while not self.stop.is_set():
                 if seconds and time.monotonic()-self.started>=seconds: self.trip("requested duration completed",flatten_on_exit)
@@ -277,19 +308,28 @@ class Engine:
                         else: await asyncio.sleep(.1); continue
                     await self.cycle()
                     self.failure_count=0
+                    self.last_failure_unclassified=False
                 except UncertainOrder as exc:
+                    self.last_failure_unclassified=False
                     self.trip(str(exc))
                 except RequestForbidden as exc:
+                    self.last_failure_unclassified=False
                     self.trip(str(exc))
                 except RateLimited:
                     pass
                 except ExchangeError as exc:
+                    self.last_failure_unclassified=isinstance(exc,UnclassifiedRejection) and str(exc)=="unclassified HTTP 403: placeOrder"
                     self.failure_count+=1
                     self.log("request_failed",reason=str(exc),consecutive=self.failure_count)
                     if self.failure_count>=self.c.max_order_failures: self.trip("consecutive request failures")
                 await asyncio.sleep(self.c.quote_interval_seconds)
+        except Exception as exc:
+            primary_error=exc
+            self.log("execution_error",error_type=type(exc).__name__,locations=exception_locations(exc))
+            raise
         finally:
             self.trading_enabled=False
+            self.quality.finish()
             self.stop.set()
             if self.clock_task:
                 self.clock_task.cancel()
@@ -298,11 +338,17 @@ class Engine:
                 if self.venue and enabled and not cancelled:
                     await asyncio.shield(self.cancel_all())
                 if self.live:
-                    await self.venue.reconcile()
+                    synced=await self.venue.reconcile()
+                    self.rejection_restart_ready=primary_error is None and self.rejection_restart_safe(synced)
+                    if self.rejection_restart_ready:
+                        self.log("rejection_restart_ready",retry_seconds=self.c.rejection_restart_seconds,position=self.venue.account_qty,cleanup_confirmed=True)
                     if enabled and self.c.server_protection: await self.venue.disarm_if_clear()
                 if self.api.book:
                     self.log("final",halt=self.halt,**self.ledger.report(self.api.book,self.taker_fee),
                              residual_position=self.venue.account_qty if self.live else self.ledger.qty)
+            except Exception as exc:
+                self.log("cleanup_error",error_type=type(exc).__name__,locations=exception_locations(exc),primary_error_type=type(primary_error).__name__ if primary_error else None)
+                if primary_error is None:raise
             finally:
                 stream.cancel(); guard.cancel()
                 await asyncio.gather(stream,guard,return_exceptions=True)

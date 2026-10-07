@@ -200,6 +200,17 @@ class LiveLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_fill_rest_ws_dedup(self):
         f=dict(tradeId="1",orderId="server",marketId=1,side="BUY",size="0.01",price="100",fee="0",role="MAKER",createdAt=self.v.started_us+1)
         self.v.apply_fill(f); self.v.apply_fill(f); self.assertEqual(self.v.ledger.qty,D("0.01"))
+    async def test_live_fill_quality_observer_runs_once_with_quote_context(self):
+        observed=[];self.v.on_fill=observed.append
+        q=Quote("BUY-1","BUY",D(100),D(".01"),False,D("1.2"))
+        self.v.history["owned"]=Order(q,"owned",q.qty,0,order_id="server")
+        f=dict(tradeId="quality",orderId="server",marketId=1,side="BUY",size=".01",price="100",fee="0",role="MAKER",createdAt=self.v.started_us+1)
+        self.v.apply_fill(f);self.v.apply_fill(f)
+        self.assertEqual(len(observed),1);self.assertEqual(observed[0]["spread_bps"],D("1.2"))
+        self.assertEqual(observed[0]["timestamp_us"],f["createdAt"])
+        self.v.apply_fill(dict(f,tradeId="taker",role="TAKER"))
+        self.assertEqual(len(observed),1)
+
     async def test_local_self_cross_blocked_before_request(self):
         q=Quote("SELL-1","SELL",D(100),D("0.01"))
         self.v.orders[q.slot]=Order(q,"existing",q.qty,0)

@@ -7,6 +7,7 @@ import time
 from decimal import Decimal as D
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from .strategy import inventory_shift
 
 class Dashboard:
     def __init__(self, engine, loop, port, flatten=False):
@@ -86,7 +87,7 @@ class Dashboard:
         # Only display selected structured fields, never credentials or request headers.
         fill_fields=("time_ns","side","quantity","price","fee","role","maker","position","trade_id")
         fills=[{k:r[k] for k in fill_fields if k in r} for r in recent if r.get("event")=="fill"][-30:][::-1]
-        event_names={"startup_cancel_begin","startup_cancel_confirmed","halt","fatal","ws_connected","ws_disconnected","request_failed","mutation_rejected",
+        event_names={"cancel_all_not_needed","cancel_all_fallback","cancel_all_recovered","cancel_cleanup_mode","startup_cancel_begin","startup_cancel_confirmed","halt","fatal","ws_connected","ws_disconnected","request_failed","mutation_rejected",
                      "software_protection_enabled","software_cancel_confirmed","software_cancel_failed","protection_armed","protection_disarmed","protection_retained","protection_quota_exhausted","rate_limit_pause","cancel_wait","mutation_uncertain","mutation_recovered","mutation_recovery_failed","quote_retry",
                      "auto_resume_selected","preflight","trading_enabled","cancel_all_confirmed","exit_attempt","clock_unavailable","order_state"}
         event_fields=("time_ns","event","reason","status","rejection_reason","action","status_code","consecutive","error_type","retry_seconds","retry_at_ms","response_kind","rejection_class")
@@ -113,8 +114,8 @@ class Dashboard:
             position=position,average_entry=e.ledger.entry,position_notional=position_notional,
             metrics=e.ledger.report(book,e.taker_fee) if book and hasattr(e,"taker_fee") else {},
             pricing=dict(getattr(getattr(e,"quote_policy",None),"state",{}),
-                inventory_shift_bps=-D(e.c.inventory_skew_bps)*max(D(-1),min(D(1),position*book.mid/cap)) if book and cap>0 else None,
-                inventory_skew_limit_bps=e.c.inventory_skew_bps,
+                inventory_shift_bps=inventory_shift(e.c,position*book.mid/cap) if book and cap>0 else None,
+                inventory_skew_limit_bps=D(e.c.inventory_skew_bps)+D(e.c.inventory_cubic_bps),
                 adaptive_enabled=e.c.adaptive_spread,
                 maker_volume_pct=e.ledger.maker_volume/e.ledger.volume*100 if e.ledger.volume else None,
                 net_pnl=e.ledger.realized-e.ledger.fees+e.ledger.unrealized(book.mid) if book else None,
@@ -152,5 +153,6 @@ class Dashboard:
                 recovering=getattr(venue,"recovering",False),last_error=a.error),
             recovery=dict(enabled=e.auto_resume,resumed=bool(getattr(venue,"resume_info",None)),
                           info=getattr(venue,"resume_info",None)),
+            quality=e.quality.snapshot(now),
             fees=dict(maker=getattr(e,"maker_fee",None),taker=getattr(e,"taker_fee",None)),
             fills=fills,events=events,flatten_on_stop=self.flatten)

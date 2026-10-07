@@ -251,3 +251,12 @@ Inventory-shifted reducing quotes that would cross the opposite BBO are clamped 
 Signed writes are serialized and spaced by at least mutation_interval_seconds (default 0.3), with fresh timestamps after pacing. Exhausted account-pool snapshots add a conservative two-second pool delay; the -1 sentinel is not treated as exhaustion. Consecutive HTTP 429 responses back off for 5, 10, 20, 40 and 60 seconds, respecting any longer server delay. The streak resets after 120 seconds without a limit. Read-only 429 also pauses new writes instead of becoming a generic consecutive failure.
 
 403 is not blindly treated as transient. Only an explicit JSON temporary-ban/rate-limit message enters cooldown (at least 30 seconds); other 403 responses stop with a classified forbidden reason, and the same write action is not retried in that process. No gateway restriction is bypassed. Confirmed cleanup is reused only while the tracked order revision remains unchanged and no tracked orders remain; new placements invalidate it. Unknown or forbidden cleanup results remain failures and are not resent by watchdog/main/finally paths. These controls reduce request pressure but cannot repair revoked keys, authorization mismatches or server bans. Verify residual orders/positions if cleanup fails.
+
+
+## Current optimization progress
+
+See [optimization progress](docs/OPTIMIZATION_PROGRESS.md) for completed cancellation recovery, Microprice/L1 features, cubic inventory controls, maker markouts, side-specific toxicity spreads, multi-scale EWMA, validation results and remaining work. This document supersedes older cancellation policy notes: unclassified 403 is not permanent permission failure; cleanup still requires terminal-order proof.
+
+Full offline checks: `python run_offline_tests.py -v` (external network blocked, loopback dashboard tests allowed). See [code review](docs/CODE_REVIEW_2026-10-07.md) for the latest fixes and validation.
+
+Unclassified placeOrder 403 stops can restart after verified cleanup and account/fill reconciliation, with a minimum configured cooldown (default 60s, rejection_restart_seconds). This requires auto-resume; operator stops, risk stops, explicit permission failures, uncertain orders and failed cleanup remain final.

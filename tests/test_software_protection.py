@@ -26,11 +26,11 @@ class SoftwareProtection(unittest.IsolatedAsyncioTestCase):
         self.live.protection_block_reason="daily_trigger_limit"
         await self.live.enable()
         self.assertTrue(self.live.leverage_confirmed)
-        self.assertEqual([c.args[0] for c in self.live.post.await_args_list],["setLeverage"])
+        self.live.post.assert_not_awaited()
         self.assertEqual(self.live.arm_time,0)
         self.assertEqual(self.live.protection_cooldown,0)
         await self.live.arm()
-        self.assertEqual(self.live.post.await_count,1)
+        self.assertEqual(self.live.post.await_count,0)
     async def test_watchdog_requests_cancel_without_waiting_for_quote_loop(self):
         e=Engine(self.c,self.api,log,live=True);e.venue=self.live
         self.api.clock_fault=True
@@ -74,7 +74,7 @@ class SoftwareProtection(unittest.IsolatedAsyncioTestCase):
         e.cycle.assert_awaited_once()
         self.live.cancel_all.assert_awaited_once()
         self.live.disarm_if_clear.assert_not_awaited()
-        self.assertEqual([c.args[0] for c in self.live.post.await_args_list],["setLeverage"])
+        self.live.post.assert_not_awaited()
     async def test_dashboard_can_show_running_without_server_protection(self):
         e=Engine(self.c,self.api,log,live=True);e.venue=self.live;e.trading_enabled=True;e.taker_fee=D(0)
         d=object.__new__(Dashboard);d.flatten=True

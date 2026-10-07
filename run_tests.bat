@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-python -m unittest -v
+python run_offline_tests.py -v
 set "TEST_EXIT_CODE=%ERRORLEVEL%"
 echo.
 if "%TEST_EXIT_CODE%"=="0" (

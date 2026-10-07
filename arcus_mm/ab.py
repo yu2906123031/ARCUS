@@ -84,7 +84,7 @@ def make_pair(c,api,market,maker,taker,directory):
     engines=[]
     clock_lock=asyncio.Lock()
     for label,skew in (("skew_off","0"),("skew_on",c.inventory_skew_bps)):
-        config=replace(c,market="BTC-USD",paper=True,strategy="mid",inventory_skew_bps=skew,
+        config=replace(c,market="BTC-USD",paper=True,strategy="mid",inventory_skew_bps=skew,inventory_cubic_bps="0" if label=="skew_off" else c.inventory_cubic_bps,
                        log_dir=str(Path(directory)/label))
         config.validate()
         log=MeasuredLog(config.log_dir)
@@ -93,12 +93,17 @@ def make_pair(c,api,market,maker,taker,directory):
         e.maker_fee,e.taker_fee=maker,taker
         e.last_metadata=time.monotonic()
         e.trading_enabled=True
+        e.attach_observers(set_feed=False)
         log("session",variant=label,market=config.market,strategy=config.strategy,
             leverage_cap=config.leverage_cap,maker_fee=maker,taker_fee=taker,config=config.__dict__)
         engines.append(e)
     def trades(rows,book):
         for e in engines:
             if not e.halt and not e.stop.is_set(): e.venue.trades(rows,book)
+    def books(book):
+        for e in engines:
+            if not e.stop.is_set():e.observe_book(book)
+    api.on_book=books
     api.on_trades=trades
     return engines
 
@@ -144,6 +149,8 @@ async def execute(c,seconds,directory):
         results={}
         for label,e in zip(("skew_off","skew_on"),engines):
             results[label]=dict(halt=e.halt,**e.log.measurements.report(e.ledger,api.book,e.taker_fee)) if api.book else dict(halt=e.halt,error="no BBO")
+            e.quality.finish()
+            results[label]["quality"]=e.quality.snapshot(time.monotonic())
             e.log("ab_summary",**results[label])
         report=dict(market="BTC-USD",mode="paper",elapsed_seconds=time.monotonic()-start,
                     caveat="Paper fills are not live fills; completed half-lives exclude censored episodes. Both variants use identical adaptive settings and fee models.",results=results)
