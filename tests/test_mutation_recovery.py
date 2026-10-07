@@ -12,6 +12,7 @@ class MutationRecovery(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.api=PublicAPI(replace(Config(),confirmation_seconds=.2),log)
         self.api.market=market(); self.api.connected=True
+        self.api.fresh=lambda:True
         with credentials():self.live=Live(self.api,Ledger(100),log)
         self.order=Order(Quote("BUY-1","BUY",D(100),D(".01")),"original",D(".01"),0,order_id="server",status="OPEN")
         self.live.orders[self.order.quote.slot]=self.order

@@ -209,3 +209,45 @@ After shutdown cancellation, fill/account reconciliation and REST confirmation o
 ## Software-only protection (current live launcher)
 
 At the user's request, `mm_live_btc_100.json` now sets `server_protection: false`. Live startup confirms leverage and account consistency without arming or renewing `scheduleCancel`; the daily server auto-fire quota no longer gates trading. The software watchdog stops new orders and independently requests REST cancellation when its local fault thresholds trip. Cancellation retries definite pre-transmission failures and HTTP 429 for up to 60 seconds; uncertain mutations are not blindly resent. Stop-loss, position caps, authenticated Stop, startup account checks and restart recovery remain enabled. The dashboard explicitly labels software-only mode. A stopped/crashed process or a network outage affecting REST cannot guarantee cancellation; no server fallback exists in this mode. Re-enable `server_protection: true` to use server protection again. Restart normally to load these changes.
+
+
+## Inventory-aware adaptive pricing
+
+The live BTC configuration keeps leverage at 5, per-order notional at 10% of risk equity and the position cap at 25%. Inventory shifts the quote center by up to 2 bps against the held position (long shifts down, short shifts up). Directional budgets, minimum sizes and reduce-only handling at the cap still apply.
+
+Fresh BBO mid prices are sampled at most once per second in a bounded 30-second window. After five samples, the RMS sampled return times 2, current half-book spread and the base 2 bps determine the half-spread, capped at 8 bps. This is a sampled price-change measure, not a forecast. Repricing scales from 0.5 to 2 bps; grid uses one level once the spread reaches twice the base. A fee floor covers positive maker fees plus 25% of the current taker fee; rebates do not narrow quotes. The fee floor can override the spread cap. This configurable reserve does not guarantee profitable fills. Funding data is not incorporated yet.
+
+Paper and live engines share the pricing path. Default paper settings retain fixed quotes for baseline comparisons; use a copy of the live configuration without --live to test adaptive settings. quote_policy events record spread, reprice threshold, sampled volatility and fee floor. No benchmark improvement has been established. Restart normally to load these settings.
+
+
+## BTC inventory-skew paper A/B
+
+Run `python -m arcus_mm.ab --seconds 3600`. This command has no live option, never loads credentials, and forces paper BTC mid mode even when reading the live settings. Two independent ledgers consume the same public BBO/trade stream with identical fee, latency, adaptive-spread and risk settings; only inventory skew differs (0 versus configured 2 bps). It uses the existing exclusive runtime lock, so stop the current bot normally first.
+
+Each variant writes its own JSONL under a timestamped mm_logs/ab-BTC-USD directory; summary.json contains wear_per_dollar, cancellations per USD 1000 of maker volume, and median inventory half-life. Half-life starts at a nonzero exposure, resets/censors if exposure increases, and completes when magnitude halves or the position crosses zero; pending intervals are censored. Only the latest 10000 completed intervals are retained. No fills means unavailable metrics, not zero risk. Duration completion and Ctrl+C request paper-only flattening with the same exit model. This does not validate live queue position or profitability.
+
+
+## Pricing monitoring and offline hourly reports
+
+The dashboard includes effective quote half-spread, replacement threshold, inventory center shift, sampled volatility, fee floor, maker volume share, net PnL after fees, and unconfirmed order count. Funding is excluded.
+
+Use `python -m arcus_mm.report path/to/paper-or-live.jsonl --output mm_logs/hourly.json` for an offline UTC-hour report. Hourly fill totals include notional and actual recorded fees; maker share and cancellation request ratios are unavailable without maker fills. The last observed PnL/wear remain cumulative session figures, not hourly profit. Recorded disconnect, stop, reconciliation, clock and protection faults are counted as alerts; no messages are sent externally. Only selected statistical fields are output. Malformed or incomplete records are counted and skipped.
+
+
+## Confirmed startup cleanup of bot orders
+
+Run --live --auto-resume now permits cleanup of leftover bot orders before quoting. The latest matching live session must prove every open order by client ID; all must belong to the configured market. The engine cancels each proven order once, verifies its terminal status by REST, confirms the account has no remaining orders, then reloads the account and replays fills from the original recovery origin. Fills racing cancellation must reconcile before quotes begin. Manual/unlogged orders, other-market orders, missing logs, and unknown mutation results block startup. Doctor remains read-only and never cancels. A plain open-order startup refusal is no longer treated as transient, avoiding an endless restart loop. No live cleanup is performed merely by installing this update; restart the launcher normally to use it.
+
+
+## Current live fill-rate tuning
+
+The live configuration now uses a 1.2 bps base half-spread, a 4 bps adaptive cap, and a 1.2 volatility multiplier. The replacement threshold starts at 0.8 bps and scales up to 1.5 bps to reduce queue churn. Leverage remains 5, notional per order 10% of risk equity, position cap 25%, and floating stop 1%. The fee floor remains active. These settings seek more passive fills and do not guarantee higher volume or PnL.
+
+Inventory-shifted reducing quotes that would cross the opposite BBO are clamped to the passive same-side BBO instead of disappearing. batch_quote_cancels allows both outdated sides to be cancelled sequentially with confirmation in one cycle; placements wait for the next cycle and recompute from current fills and prices. No cancel/placement requests are sent in parallel. Restart normally to load this profile.
+
+
+## Request pressure and rejected cancellation
+
+Signed writes are serialized and spaced by at least mutation_interval_seconds (default 0.3), with fresh timestamps after pacing. Exhausted account-pool snapshots add a conservative two-second pool delay; the -1 sentinel is not treated as exhaustion. Consecutive HTTP 429 responses back off for 5, 10, 20, 40 and 60 seconds, respecting any longer server delay. The streak resets after 120 seconds without a limit. Read-only 429 also pauses new writes instead of becoming a generic consecutive failure.
+
+403 is not blindly treated as transient. Only an explicit JSON temporary-ban/rate-limit message enters cooldown (at least 30 seconds); other 403 responses stop with a classified forbidden reason, and the same write action is not retried in that process. No gateway restriction is bypassed. Confirmed cleanup is reused only while the tracked order revision remains unchanged and no tracked orders remain; new placements invalidate it. Unknown or forbidden cleanup results remain failures and are not resent by watchdog/main/finally paths. These controls reduce request pressure but cannot repair revoked keys, authorization mismatches or server bans. Verify residual orders/positions if cleanup fails.

@@ -3,8 +3,14 @@
   "ws_url": "wss://api.arcus.xyz/v1/ws",
   "market": "BTC-USD",
   "strategy": "mid",
-  "spread_bps": "2",
+  "spread_bps": "1.2",
   "bias_bps": "0",
+  "inventory_skew_bps": "2",
+  "adaptive_spread": true,
+  "max_spread_bps": "4",
+  "max_reprice_bps": "1.5",
+  "volatility_multiplier": "1.2",
+  "exit_fee_reserve_fraction": "0.25",
   "order_equity_fraction": "0.1",
   "max_position_equity_fraction": "0.25",
   "stop_loss_equity_fraction": "0.01",
@@ -19,8 +25,9 @@
   "max_order_failures": 2,
   "clock_samples": 3,
   "clock_max_rtt_ms": 1000,
-  "reprice_bps": "0.5",
+  "reprice_bps": "0.8",
   "capital_cap": "100",
   "account_refresh_seconds": 1,
-  "log_dir": "mm_logs/live-BTC-USD"
+  "log_dir": "mm_logs/live-BTC-USD",
+  "batch_quote_cancels": true
 }

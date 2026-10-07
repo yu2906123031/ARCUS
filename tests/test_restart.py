@@ -37,6 +37,7 @@ class RestartPolicy(unittest.TestCase):
             self.assertFalse(retryable(RateLimited("429"),halt))
         self.assertFalse(retryable(UncertainOrder("unknown")))
         self.assertFalse(retryable(ExchangeError("mutation HTTP 400: setLeverage")))
+        self.assertFalse(retryable(ExchangeError("startup requires no open orders")))
 
 class RateLimitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

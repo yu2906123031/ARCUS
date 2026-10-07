@@ -1,10 +1,10 @@
 import asyncio
 import time
 from decimal import Decimal as D
-from .api import ExchangeError, UncertainOrder, ClockUnavailable, Live, RateLimited
+from .api import ExchangeError, UncertainOrder, ClockUnavailable, Live, RateLimited, RequestForbidden
 from .models import BPS, Book, Ledger, Quote
 from .paper import Paper
-from .strategy import targets, replace_needed, safe_resting
+from .strategy import targets, replace_needed, safe_resting, QuotePolicy
 
 class Engine:
     def __init__(self,c,api,log,live=False,resume=None,auto_resume=False):
@@ -26,9 +26,12 @@ class Engine:
         self.exit_attempts=0
         self.exit_started=None
         self.cancel_lock=asyncio.Lock()
+        self.last_clear_revision=None
+        self.cancel_terminal_error=None
         self.last_metadata=0.0
         self.unsynced_since=None
         self.clock_task=None
+        self.quote_policy=QuotePolicy()
 
     def trip(self,reason,flatten=False):
         if not self.halt: self.log("halt",reason=reason,flatten=flatten)
@@ -37,16 +40,21 @@ class Engine:
 
     async def cancel_all(self):
         async with self.cancel_lock:
-            if self.halt and self.safety_cancelled and not getattr(self.venue,"orders",{}): return
+            if self.cancel_terminal_error is not None: raise self.cancel_terminal_error
+            revision=getattr(self.venue,"order_revision",0)
+            if self.last_clear_revision==revision and not getattr(self.venue,"orders",{}): return
             deadline=time.monotonic()+60
             retry_delay=1
             while True:
                 try:
                     await self.venue.cancel_all()
+                    self.last_clear_revision=getattr(self.venue,"order_revision",0)
                     if self.halt: self.safety_cancelled=True
                     return
                 except ExchangeError as exc:
-                    if isinstance(exc,UncertainOrder): raise
+                    if isinstance(exc,(UncertainOrder,RequestForbidden)):
+                        self.cancel_terminal_error=exc
+                        raise
                     can_retry=isinstance(exc,RateLimited) or str(exc).startswith("mutation connection failed before sending: cancelAllOrders")
                     remaining=deadline-time.monotonic()
                     if not can_retry or remaining<=0: raise
@@ -61,7 +69,7 @@ class Engine:
         await self.api.clock()
         if self.live:
             self.venue=Live(self.api,self.ledger,self.log)
-            await self.venue.preflight(self.resume,auto_resume_dir=self.c.log_dir if self.auto_resume else None)
+            await self.venue.preflight(self.resume,auto_resume_dir=self.c.log_dir if self.auto_resume else None,allow_cancel=self.auto_resume)
         else:
             self.venue=Paper(self.c,market,self.ledger,self.log,maker,taker)
             self.api.on_trades=self.venue.trades
@@ -152,6 +160,7 @@ class Engine:
         if now-self.last_metadata>30:
             previous=self.api.market
             market,maker,taker=await self.api.metadata()
+            self.maker_fee,self.taker_fee=maker,taker
             if market!=previous:
                 self.trip("market metadata changed")
                 return
@@ -183,14 +192,18 @@ class Engine:
             await self.cancel_all()
             # Any fills while cancels were pending change the next target budget.
             return
-        desired={q.slot:q for q in targets(self.c,self.api.market,book,equity,self.ledger.qty)}
+        quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)))
+        desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty)}
+        cancelled_quotes=False
         for slot,o in list(self.venue.orders.items()):
             q=desired.get(slot)
-            if q is None or replace_needed(o.quote,q,self.api.market.tick,self.c.reprice_bps):
+            if q is None or replace_needed(o.quote,q,self.api.market.tick,quote_config.reprice_bps):
                 self.log("quote_cancel",slot=slot,reason="target_removed" if q is None else "quote_changed",old_price=o.quote.price,new_price=q.price if q else None)
                 await self.venue.cancel(slot)
-                # Recompute after confirmed cancel; never use a pre-fill plan.
-                return
+                # Only cancellations share a cycle; placements use a fresh next-cycle plan.
+                cancelled_quotes=True
+                if not self.c.batch_quote_cancels or self.halt or not self.api.fresh(): return
+        if cancelled_quotes: return
         for slot,q in desired.items():
             if slot in self.venue.orders: continue
             if self.halt or not self.api.fresh(): return
@@ -209,6 +222,7 @@ class Engine:
             self.failure_count=0
         self.failure_count=0
         if now-self.last_report>=5:
+            self.log("quote_policy",**self.quote_policy.state,inventory_skew_bps=self.c.inventory_skew_bps)
             self.log("position",**self.ledger.report(book,self.taker_fee),
                      authoritative_equity=self.venue.equity if self.live else equity,
                      account_position=self.venue.account_qty if self.live else self.ledger.qty)
@@ -247,6 +261,12 @@ class Engine:
                                 continue
                     cooldown=max(self.api.cooldown,getattr(self.venue,"protection_cooldown",0) if not enabled and self.c.server_protection else 0)
                     if self.live and time.monotonic()<cooldown:
+                        if enabled and self.api.fresh():
+                            book=self.api.book
+                            loss=self.ledger.unrealized(book.bid if self.ledger.qty>0 else book.ask)
+                            if min(self.ledger.equity(book.mid),self.venue.equity)<=0 or loss<=-self.ledger.initial*D(self.c.stop_loss_equity_fraction):
+                                self.trip("floating loss stop reached",flatten=True)
+                                continue
                         await asyncio.sleep(min(1,cooldown-time.monotonic()))
                         continue
                     if not enabled:
@@ -258,6 +278,8 @@ class Engine:
                     await self.cycle()
                     self.failure_count=0
                 except UncertainOrder as exc:
+                    self.trip(str(exc))
+                except RequestForbidden as exc:
                     self.trip(str(exc))
                 except RateLimited:
                     pass

@@ -1,18 +1,17 @@
 """Restart only transient exits; operator and risk stops remain final."""
 import time
-from .api import RateLimited, UncertainOrder, ClockUnavailable
+from .api import RateLimited, UncertainOrder, ClockUnavailable, RequestForbidden
 
 RETRY_EXIT=75
 TRANSIENT_HALTS={"disconnected, stale data, clock or incomplete subscriptions", "account state stale", "clock synchronization failed"}
 
 def retryable(exc, halt=None):
     if halt and halt not in TRANSIENT_HALTS: return False
-    if isinstance(exc,(KeyboardInterrupt,UncertainOrder)): return False
+    if isinstance(exc,(KeyboardInterrupt,UncertainOrder,RequestForbidden)): return False
     if isinstance(exc,(RateLimited,ClockUnavailable)): return True
     if halt in TRANSIENT_HALTS: return True
     reason=str(exc)
-    return (reason=="startup requires no open orders" or
-            reason=="read-only request unavailable after 3 attempts" or
+    return (reason=="read-only request unavailable after 3 attempts" or
             reason.startswith("mutation connection failed before sending:") or
             reason in {"read-only request HTTP 500","read-only request HTTP 502","read-only request HTTP 503","read-only request HTTP 504","read-only request HTTP 429"})
 

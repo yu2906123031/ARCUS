@@ -366,6 +366,22 @@ class ClockRegression(unittest.IsolatedAsyncioTestCase):
         await e.cycle()
         self.assertEqual(len(e.venue.orders),1)
 
+    async def test_batch_cancels_confirm_both_then_place_from_next_frame(self):
+        api=self.api;api.market=market();api.book=book()
+        api.connected=True;api.ready={"bbo","trades"};api.clock_checked=time.monotonic()
+        c=replace(Config(),order_equity_fraction=".2",batch_quote_cancels=True)
+        e=Engine(c,api,log);e.last_metadata=time.monotonic();e.taker_fee=D(0)
+        e.venue=Paper(c,market(),e.ledger,log,D(0),D(0))
+        await e.cycle()
+        self.assertEqual(len(e.venue.orders),2)
+        api.book=book("100009","100011")
+        await e.cycle()
+        self.assertEqual(len(e.venue.orders),0)
+        api.book=book("100019","100021")
+        await e.cycle()
+        expected={q.slot:q.price for q in targets(c,market(),api.book,D(100),D(0))}
+        self.assertEqual({slot:o.quote.price for slot,o in e.venue.orders.items()},expected)
+
     async def test_background_skew_stops_and_cancels(self):
         api=self.api; api.market=market(); api.book=book()
         e=Engine(Config(),api,log)

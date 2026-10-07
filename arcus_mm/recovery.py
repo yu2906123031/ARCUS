@@ -47,3 +47,17 @@ def latest_resume(directory, market, account_index):
         if number(initial)<=0 or not 0<since<=time.time_ns()//1000: raise ValueError("invalid auto-resume bounds")
         return path, Resume(since,initial,market,account_index)
     raise ValueError("no matching live-session log for existing position")
+
+
+def logged_client_ids(path):
+    """Ownership comes from recorded submissions, not just a client-ID prefix."""
+    ids=set()
+    with Path(path).open(encoding="utf-8") as source:
+        for line in source:
+            try: row=json.loads(line)
+            except json.JSONDecodeError: break
+            if row.get("event")=="order" and row.get("mode")=="live":
+                client=row.get("client_id")
+                if isinstance(client,str) and client.startswith("mm-"): ids.add(client)
+            if len(ids)>20000: raise ValueError("startup ownership history bound reached")
+    return ids

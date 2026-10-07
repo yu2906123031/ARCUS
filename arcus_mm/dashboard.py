@@ -86,10 +86,10 @@ class Dashboard:
         # Only display selected structured fields, never credentials or request headers.
         fill_fields=("time_ns","side","quantity","price","fee","role","maker","position","trade_id")
         fills=[{k:r[k] for k in fill_fields if k in r} for r in recent if r.get("event")=="fill"][-30:][::-1]
-        event_names={"halt","fatal","ws_connected","ws_disconnected","request_failed","mutation_rejected",
+        event_names={"startup_cancel_begin","startup_cancel_confirmed","halt","fatal","ws_connected","ws_disconnected","request_failed","mutation_rejected",
                      "software_protection_enabled","software_cancel_confirmed","software_cancel_failed","protection_armed","protection_disarmed","protection_retained","protection_quota_exhausted","rate_limit_pause","cancel_wait","mutation_uncertain","mutation_recovered","mutation_recovery_failed","quote_retry",
                      "auto_resume_selected","preflight","trading_enabled","cancel_all_confirmed","exit_attempt","clock_unavailable","order_state"}
-        event_fields=("time_ns","event","reason","status","rejection_reason","action","status_code","consecutive","error_type","retry_seconds","retry_at_ms")
+        event_fields=("time_ns","event","reason","status","rejection_reason","action","status_code","consecutive","error_type","retry_seconds","retry_at_ms","response_kind","rejection_class")
         events=[{k:r[k] for k in event_fields if k in r} for r in recent
                 if r.get("event") in event_names and (r.get("event")!="order_state" or r.get("status")=="REJECTED")][-40:][::-1]
         return dict(state=state,mode="live" if e.live else "paper",market=e.c.market,strategy=e.c.strategy,
@@ -112,6 +112,13 @@ class Dashboard:
                          client_id=o.client_id,order_id=o.order_id) for o in orders],
             position=position,average_entry=e.ledger.entry,position_notional=position_notional,
             metrics=e.ledger.report(book,e.taker_fee) if book and hasattr(e,"taker_fee") else {},
+            pricing=dict(getattr(getattr(e,"quote_policy",None),"state",{}),
+                inventory_shift_bps=-D(e.c.inventory_skew_bps)*max(D(-1),min(D(1),position*book.mid/cap)) if book and cap>0 else None,
+                inventory_skew_limit_bps=e.c.inventory_skew_bps,
+                adaptive_enabled=e.c.adaptive_spread,
+                maker_volume_pct=e.ledger.maker_volume/e.ledger.volume*100 if e.ledger.volume else None,
+                net_pnl=e.ledger.realized-e.ledger.fees+e.ledger.unrealized(book.mid) if book else None,
+                unconfirmed_orders=sum(o.status not in ("OPEN","FILLED","CANCELED","REJECTED","MARGIN_CANCELED","TPSL_CANCELED","LIQUIDATED","ADL") for o in orders)),
             risk=dict(leverage=e.c.leverage_cap,capital_cap=e.c.capital_cap,
                 order_fraction=e.c.order_equity_fraction,position_fraction=e.c.max_position_equity_fraction,
                 stop_fraction=e.c.stop_loss_equity_fraction,position_limit_usd=cap,
@@ -130,6 +137,10 @@ class Dashboard:
                 protection_block_reason=getattr(venue,"protection_block_reason",None),
                 protection_retry_at_ms=getattr(venue,"protection_retry_at_ms",None),
                 cooldown_seconds=round(max(0,a.cooldown-now),1),
+                rate_limit_streak=getattr(a,"limit_streak",0),
+                mutation_interval_seconds=e.c.mutation_interval_seconds,
+                forbidden_actions=sorted(getattr(venue,"forbidden_actions",{})),
+                cancel_cleanup_failed=e.cancel_terminal_error is not None,
                 required_channels=sorted(required),ready_channels=sorted(ready),
                 missing_channels=sorted(required-ready),account_synced=synced,
                 account_position=account_qty,account_sequence=account_seq,fill_sequence=fill_seq,

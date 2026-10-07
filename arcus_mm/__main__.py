@@ -22,7 +22,7 @@ def main(argv=None):
     p.add_argument("--dashboard", action="store_true", help="local monitoring UI")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--resume-log",help="replay prior live fills and prove account consistency before taking over")
-    p.add_argument("--auto-resume",action="store_true",help="automatically replay the latest matching live log for an existing position")
+    p.add_argument("--auto-resume",action="store_true",help="replay the latest matching live log; run may cancel proven leftover bot orders, doctor remains read-only")
     p.add_argument("--auto-restart",action="store_true",help="restart transient failures after backoff; never restart operator or risk stops")
     argv=list(sys.argv[1:] if argv is None else argv)
     a=p.parse_args(argv)

@@ -13,6 +13,7 @@ TERMINAL = {"FILLED", "CANCELED", "REJECTED", "MARGIN_CANCELED", "TPSL_CANCELED"
 class ExchangeError(RuntimeError): pass
 class UncertainOrder(ExchangeError): pass
 class RateLimited(ExchangeError): pass
+class RequestForbidden(ExchangeError): pass
 class ClockUnavailable(ExchangeError): pass
 
 def daily_protection_quota(payload,server_seconds):
@@ -41,16 +42,38 @@ class PublicAPI:
         self.market=None
         self.signer=None
         self.cooldown=0.0
+        self.limit_streak=0
+        self.last_limit=0.0
         self.clock_fault=False
         self.clock_pending=False
         self.clock_anchor=None
         self.channels={"bbo","trades"}
+
+    def rate_limit_wait(self,response,minimum=5):
+        now=time.monotonic()
+        if now-self.last_limit>120: self.limit_streak=0
+        self.limit_streak=min(5,self.limit_streak+1);self.last_limit=now
+        try: payload=response.json()
+        except ValueError: payload={}
+        if not isinstance(payload,dict): payload={}
+        def delay(value,scale=1):
+            try:
+                parsed=float(value)/scale
+                return parsed if 0<=parsed<float("inf") else minimum
+            except (ValueError,TypeError): return minimum
+        wait=max(minimum,min(60,5*2**(self.limit_streak-1)),delay(response.headers.get("Retry-After",minimum)),delay(payload.get("retryAfterMs",minimum*1000),1000))
+        self.cooldown=max(self.cooldown,now+wait)
+        return wait,payload
 
     async def get(self,path,params=None):
         # Retry reads only. Never automatically resend signed mutations.
         for attempt in range(3):
             try:
                 r=await self.http.get(path,params=params)
+                if r.status_code==429:
+                    wait,_=self.rate_limit_wait(r)
+                    self.log("rate_limit_pause",action="read",retry_seconds=wait)
+                    raise RateLimited("read-only request HTTP 429")
                 r.raise_for_status()
                 return r.json()
             except httpx.TransportError:
@@ -174,6 +197,27 @@ class PublicAPI:
                 self.on_disconnect()
             await asyncio.sleep(1)
 
+def rejection_details(response):
+    """Fixed diagnostic categories only; never echo response text or credentials."""
+    try: payload=response.json()
+    except ValueError:
+        kind="html" if "text/html" in response.headers.get("content-type","").lower() else "non_json"
+        return dict(response_kind=kind,rejection_class="gateway_or_non_api_denial")
+    if not isinstance(payload,dict): return dict(response_kind="json",rejection_class="unclassified_api_denial")
+    error=payload.get("error","")
+    if not isinstance(error,str): error=""
+    error=error[:2048].lower()
+    if any(x in error for x in ("rate limit","rate-limit","too many requests","temporarily banned")):
+        category="rate_limit_or_temporary_ban"
+    elif any(x in error for x in ("accountindex","subaccount","address mismatch","address does not match","not authorized","permission")):
+        category="account_or_subaccount_permission"
+    elif any(x in error for x in ("expired","revoked","invalid api key","inactive api key")):
+        category="api_key_status"
+    elif any(x in error for x in ("signature","timestamp")):
+        category="signature_or_timestamp"
+    else: category="unclassified_api_denial"
+    return dict(response_kind="json",rejection_class=category)
+
 class Live:
     def __init__(self,api,ledger,log):
         self.api,self.c,self.ledger,self.log=api,api.c,ledger,log
@@ -200,10 +244,27 @@ class Live:
         self.protection_cooldown=0.0
         self.protection_block_reason=None
         self.protection_retry_at_ms=None
+        self.mutation_lock=asyncio.Lock()
+        self.last_mutation=0.0
+        self.pool_ready={}
+        self.forbidden_actions={}
+        self.order_revision=0
 
     def scope(self): return dict(address=self.signer.address,accountIndex=self.signer.account_index)
 
     async def post(self,action,body):
+        async with self.mutation_lock:
+            if action in self.forbidden_actions: raise self.forbidden_actions[action]
+            if time.monotonic()<self.api.cooldown: raise RateLimited("rate-limit cooldown")
+            pool="cancel" if action in ("cancelOrder","cancelAllOrders") else "order"
+            wait=max(self.last_mutation+self.c.mutation_interval_seconds,self.pool_ready.get(pool,0))-time.monotonic()
+            if wait>0: await asyncio.sleep(wait)
+            if action=="placeOrder" and body.get("timeInForce")!="IOC" and (self.fatal or not self.api.fresh()):
+                raise ExchangeError("unsafe to place after request pacing")
+            self.last_mutation=time.monotonic()
+            return await self._post(action,body)
+
+    async def _post(self,action,body):
         if action=="scheduleCancel" and body.get("time") is not None and time.monotonic()<self.protection_cooldown:
             raise RateLimited("daily service protection quota exhausted")
         if time.monotonic()<self.api.cooldown: raise RateLimited("rate-limit cooldown")
@@ -229,16 +290,7 @@ class Live:
                 self.fatal="uncertain mutation transport result: "+action
                 raise UncertainOrder(self.fatal) from None
         if r.status_code==429:
-            try: payload=r.json()
-            except ValueError: payload={}
-            if not isinstance(payload,dict): payload={}
-            def delay(value,scale=1):
-                try:
-                    parsed=float(value)/scale
-                    return parsed if 0<=parsed<float("inf") else 5
-                except (ValueError,TypeError): return 5
-            wait=max(5,delay(r.headers.get("Retry-After",5)),delay(payload.get("retryAfterMs",5000),1000))
-            self.api.cooldown=time.monotonic()+wait
+            wait,payload=self.api.rate_limit_wait(r)
             quota=daily_protection_quota(payload,time.time()+self.api.offset_ns/1e9) if action=="scheduleCancel" else None
             if quota is not None:
                 quota_wait,reset=quota
@@ -250,6 +302,17 @@ class Live:
             else:
                 self.log("rate_limit_pause",action=action,retry_seconds=wait)
             raise RateLimited("mutation HTTP 429: "+action)
+        if r.status_code==403:
+            details=rejection_details(r)
+            self.log("mutation_rejected",action=action,status_code=403,**details)
+            if details["rejection_class"]=="rate_limit_or_temporary_ban":
+                wait,_=self.api.rate_limit_wait(r,minimum=30)
+                self.log("rate_limit_pause",action=action,retry_seconds=wait)
+                raise RateLimited("explicit temporary ban: "+action)
+            exc=RequestForbidden("exchange request forbidden: "+action+" ("+details["rejection_class"]+")")
+            self.forbidden_actions[action]=exc
+            self.fatal=str(exc)
+            raise exc
         if r.status_code>=500:
             recovered=await self.recover_mutation(action,body,"HTTP_"+str(r.status_code))
             if recovered is not None: return recovered
@@ -257,9 +320,15 @@ class Live:
             raise UncertainOrder(self.fatal)
         if not r.is_success:
             # Do not log signed requests/headers or echo potentially sensitive responses.
-            self.log("mutation_rejected",action=action,status_code=r.status_code)
+            self.log("mutation_rejected",action=action,status_code=r.status_code,**rejection_details(r))
             raise ExchangeError("mutation HTTP "+str(r.status_code)+": "+action)
-        return r.json()
+        payload=r.json()
+        limit=payload.get("rateLimit") if isinstance(payload,dict) else None
+        if isinstance(limit,dict) and limit.get("pool") in ("order","cancel") and type(limit.get("remaining")) is int:
+            self.log("request_pool",pool=limit["pool"],remaining=limit["remaining"])
+            if limit["remaining"]<=0 and limit["remaining"]!=-1:
+                self.pool_ready[limit["pool"]]=time.monotonic()+2
+        return payload
 
     async def recover_mutation(self,action,body,error_type):
         # Resolve the original request only. Never resend a possibly executed order.
@@ -290,7 +359,26 @@ class Live:
         self.log("mutation_recovery_failed",action=action,client_id=order.client_id)
         return None
 
-    async def preflight(self,resume=None,auto_resume_dir=None):
+    async def cancel_startup_orders(self,orders,owned):
+        for row in orders:
+            if row.get("marketId")!=self.api.market.id or row.get("clientId") not in owned or not row.get("orderId"):
+                raise ExchangeError("startup contains orders not proven to belong to this bot")
+        self.log("startup_cancel_begin",count=len(orders))
+        for row in orders:
+            await self.post("cancelOrder",dict(self.scope(),marketId=self.api.market.id,kind="clientId",clientId=row["clientId"]))
+            deadline=time.monotonic()+self.c.confirmation_seconds
+            while True:
+                raw=await self.api.get("/v1/order/"+row["orderId"],self.scope())
+                state=raw.get("order",raw)
+                if state.get("orderId")==row["orderId"] and state.get("status") in TERMINAL: break
+                if time.monotonic()>=deadline:
+                    raise UncertainOrder("startup cancel did not reach confirmed terminal state")
+                await asyncio.sleep(.25)
+        remaining=(await self.api.get("/v1/openOrders",self.scope()))["orders"]
+        if remaining: raise ExchangeError("startup still has open orders after confirmed cancellation")
+        self.log("startup_cancel_confirmed",count=len(orders))
+
+    async def preflight(self,resume=None,auto_resume_dir=None,allow_cancel=False):
         keys=(await self.api.get("/v1/apiKeys",{"address":self.signer.address}))["apiKeys"]
         key=next((k for k in keys if k["apiKey"].removeprefix("0x").lower()==self.signer.public),None)
         if not key or key["status"]!="ACTIVE": raise ExchangeError("registered active API key not found")
@@ -299,10 +387,12 @@ class Live:
         if key["validUntil"] and int(key["validUntil"])<=time.time_ns()//1000000: raise ExchangeError("expired API key")
         a=await self.api.get("/v1/account",self.scope())
         orders=(await self.api.get("/v1/openOrders",self.scope()))["orders"]
-        if orders: raise ExchangeError("startup requires no open orders")
-        if resume is None and auto_resume_dir is not None and any(number(p["size"]) for p in a["positions"].values()):
+        if orders and not (allow_cancel and auto_resume_dir is not None): raise ExchangeError("startup requires no open orders")
+        resume_path=None
+        if resume is None and auto_resume_dir is not None and (orders or any(number(p["size"]) for p in a["positions"].values())):
             from .recovery import latest_resume
             path,resume=latest_resume(auto_resume_dir,self.c.market,self.signer.account_index)
+            resume_path=path
             self.log("auto_resume_selected",resume_log=str(path),market=resume.market,account_index=resume.account_index)
         if resume is None:
             if any(number(p["size"]) for p in a["positions"].values()):
@@ -314,6 +404,13 @@ class Live:
                 raise ExchangeError("resume cannot take over another market position")
             self.started_us=resume.since_us
             self.fill_cursor=resume.since_us
+        if orders:
+            if resume_path is None: raise ExchangeError("startup cancellation requires matching automatic recovery log")
+            if self.c.capital_cap is not None and number(resume.initial_equity)>D(self.c.capital_cap):
+                raise ExchangeError("resume capital exceeds configured cap")
+            from .recovery import logged_client_ids
+            await self.cancel_startup_orders(orders,logged_client_ids(resume_path))
+            a=await self.api.get("/v1/account",self.scope())
         self.equity=number(a["equity"])
         self.free_collateral=number(a["freeCollateral"])
         if self.equity<=0: raise ExchangeError("account has no positive equity")
@@ -497,6 +594,7 @@ class Live:
         cid="mm-"+uuid.uuid4().hex[:28]
         o=Order(quote,cid,quote.qty,time.monotonic())
         self.orders[quote.slot]=o; self.history[cid]=o
+        self.order_revision+=1
         if len(self.history)>20000: self.fatal="order history bound reached"; raise ExchangeError(self.fatal)
         # All orders, even IOC, require >=one month expiry. Use 40 days.
         # https://docs.arcus.xyz/api-reference/authentication

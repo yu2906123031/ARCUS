@@ -13,6 +13,13 @@ class Config:
     spread_bps: str = "2"
     bias_bps: str = "0"
     reprice_bps: str = "0.5"
+    inventory_skew_bps: str = "0"
+    adaptive_spread: bool = False
+    batch_quote_cancels: bool = False
+    max_spread_bps: str = "8"
+    max_reprice_bps: str = "2"
+    volatility_multiplier: str = "2"
+    exit_fee_reserve_fraction: str = "0"
     order_equity_fraction: str = "0.1"
     max_position_equity_fraction: str = "0.5"
     stop_loss_equity_fraction: str = "0.02"
@@ -34,6 +41,7 @@ class Config:
     quote_interval_seconds: float = 1
     account_refresh_seconds: float = 2
     confirmation_seconds: float = 8
+    mutation_interval_seconds: float = 0.3
     log_dir: str = "mm_logs"
 
     def validate(self):
@@ -49,6 +57,16 @@ class Config:
                 raise ValueError("invalid " + name)
         if D(self.reprice_bps) > D(self.spread_bps):
             raise ValueError("reprice_bps must not exceed spread_bps")
+        if type(self.batch_quote_cancels) is not bool: raise ValueError("invalid batch_quote_cancels")
+        if type(self.adaptive_spread) is not bool: raise ValueError("invalid adaptive_spread")
+        for name in ("inventory_skew_bps", "max_spread_bps", "max_reprice_bps", "volatility_multiplier", "exit_fee_reserve_fraction"):
+            value=D(getattr(self,name))
+            if not value.is_finite() or value<0: raise ValueError("invalid "+name)
+        if D(self.inventory_skew_bps)>3: raise ValueError("inventory skew must be <=3 bps")
+        if not D(self.spread_bps)<=D(self.max_spread_bps)<=50: raise ValueError("invalid maximum spread")
+        if not D(self.reprice_bps)<=D(self.max_reprice_bps)<=D(self.max_spread_bps): raise ValueError("invalid maximum reprice")
+        if not 0<D(self.volatility_multiplier)<=10: raise ValueError("invalid volatility multiplier")
+        if D(self.exit_fee_reserve_fraction)>1: raise ValueError("invalid exit fee reserve fraction")
         if self.capital_cap is not None:
             cap=D(self.capital_cap)
             if not cap.is_finite() or cap<=0: raise ValueError("invalid capital_cap")
@@ -66,7 +84,7 @@ class Config:
         if D(self.exit_slippage_bps) > 500:
             raise ValueError("IOC slippage bound must be <=500 bps")
         for name in ("disconnect_seconds", "max_clock_skew_ms", "max_order_failures", "quote_interval_seconds",
-                     "account_refresh_seconds", "confirmation_seconds"):
+                     "account_refresh_seconds", "confirmation_seconds", "mutation_interval_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not D(str(value)).is_finite() or value <= 0:
                 raise ValueError("invalid " + name)
