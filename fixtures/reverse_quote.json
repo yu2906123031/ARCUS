@@ -1,0 +1,178 @@
+{
+  "http": 200,
+  "body": {
+    "recommended": "arcus",
+    "venue": "arcus",
+    "referencePrice": "230.78",
+    "referencePriceTimestamp": 1790682853034,
+    "referencePriceSource": "robinhood",
+    "details": {
+      "paths": [
+        {
+          "proportionBps": 10000,
+          "hops": [
+            {
+              "protocol": "uniswap-v3",
+              "pool": "0x8b6a6416a5d1040efcfa6234da6aa1265dfe123e",
+              "feeTier": 10000,
+              "from": "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec",
+              "to": "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
+            },
+            {
+              "protocol": "uniswap-v4",
+              "pool": "0x84bd4e2d8be11aeb0afc1195b38f587b61e90068548f1063fdbe448fb8cad0b6",
+              "from": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+              "to": "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
+            }
+          ]
+        }
+      ]
+    },
+    "all": [
+      {
+        "venue": "arcus",
+        "details": {
+          "paths": [
+            {
+              "proportionBps": 10000,
+              "hops": [
+                {
+                  "protocol": "uniswap-v3",
+                  "pool": "0x8b6a6416a5d1040efcfa6234da6aa1265dfe123e",
+                  "feeTier": 10000,
+                  "from": "0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec",
+                  "to": "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
+                },
+                {
+                  "protocol": "uniswap-v4",
+                  "pool": "0x84bd4e2d8be11aeb0afc1195b38f587b61e90068548f1063fdbe448fb8cad0b6",
+                  "from": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+                  "to": "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
+                }
+              ]
+            }
+          ]
+        },
+        "buyAmount": "9946895",
+        "sellAmount": "43196101033525016",
+        "fees": [
+          {
+            "amount": "4989",
+            "token": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+            "type": "protocol",
+            "bps": 5,
+            "amountUsd": 0.004989
+          },
+          {
+            "amount": "27789",
+            "token": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+            "type": "gas",
+            "bps": 0,
+            "amountUsd": 0.027789
+          }
+        ],
+        "expiry": 1790682924,
+        "toSign": {
+          "domain": {
+            "name": "Permit2",
+            "chainId": 4663,
+            "verifyingContract": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+          },
+          "types": {
+            "PermitWitnessTransferFrom": [
+              {
+                "name": "permitted",
+                "type": "TokenPermissions"
+              },
+              {
+                "name": "spender",
+                "type": "address"
+              },
+              {
+                "name": "nonce",
+                "type": "uint256"
+              },
+              {
+                "name": "deadline",
+                "type": "uint256"
+              },
+              {
+                "name": "witness",
+                "type": "TakerIntent"
+              }
+            ],
+            "TokenPermissions": [
+              {
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "name": "amount",
+                "type": "uint256"
+              }
+            ],
+            "TakerIntent": [
+              {
+                "name": "taker",
+                "type": "address"
+              },
+              {
+                "name": "takerSellToken",
+                "type": "address"
+              },
+              {
+                "name": "takerBuyToken",
+                "type": "address"
+              },
+              {
+                "name": "sellAmount",
+                "type": "uint256"
+              },
+              {
+                "name": "minBuyAmount",
+                "type": "uint256"
+              },
+              {
+                "name": "allowWrapped",
+                "type": "bool"
+              },
+              {
+                "name": "nonce",
+                "type": "uint256"
+              },
+              {
+                "name": "deadline",
+                "type": "uint256"
+              }
+            ]
+          },
+          "primaryType": "PermitWitnessTransferFrom",
+          "message": {
+            "permitted": {
+              "token": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+              "amount": "43196101033525016"
+            },
+            "spender": "0x006102b16A04c20306A28b652745D3973D7D24fa",
+            "nonce": "50208399909421588475890025377993704750764032848901316363599448466827212552572",
+            "deadline": "1790682924",
+            "witness": {
+              "taker": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+              "takerSellToken": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+              "takerBuyToken": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+              "sellAmount": "43196101033525016",
+              "minBuyAmount": "9917054",
+              "allowWrapped": false,
+              "nonce": "50208399909421588475890025377993704750764032848901316363599448466827212552572",
+              "deadline": "1790682924"
+            }
+          }
+        },
+        "arcus": {
+          "minAmountOut": "9917054",
+          "estimatedGasCostUsdg": "27789"
+        }
+      }
+    ],
+    "errors": []
+  }
+}

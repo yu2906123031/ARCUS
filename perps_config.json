@@ -1,0 +1,9 @@
+﻿{
+  "product": "perpetual", "dry_run": true,
+  "symbol": "BTC-USD", "capital": "100", "leverage": "3", "notional": "285",
+  "daily_loss_limit": "5", "stop_loss_usd": "1",
+  "net_profit_buffer_bps": "1", "slippage_per_side_bps": "1",
+  "max_entry_cost_bps": "8", "momentum_bps": "2",
+  "signal_samples": 15, "poll_sec": 2, "max_book_age_sec": 10,
+  "max_hold_sec": 1200, "max_bad_exits": 3, "max_rounds": null
+}

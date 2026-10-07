@@ -1,0 +1,2833 @@
+# v5 Spot Router API
+
+- **OpenAPI Version:** `3.1.0`
+- **API Version:** `0.1.0`
+
+Meta-router for gasless spot swaps. It fans out to the liquidity venues enabled on this chain (`robinhood-mainnet`, chain id 4663), returns the best executable route, and relays taker-signed settlements on-chain with relayer-paid gas.
+
+## Swap flow
+
+1. `GET /v1/tokens` / `GET /v1/deployment` — discover tradable tokens and contract addresses.
+2. `GET /v1/price` — indicative multi-venue price for rate display (optional).
+3. `GET /v1/quote` — firm quotes; pick one (usually `recommended`) and have the taker sign its `toSign` EIP-712 payload.
+4. `POST /v1/submit` — submit the signed payload; the router broadcasts settlement and returns a `txHash`.
+5. `GET /v1/status` — poll the transaction until `confirmed` (or `failed`, e.g. `SLIPPAGE_EXCEEDED`).
+
+`POST /v1/deposit` separately relays gasless spot → perp deposits.
+
+## Machine-readable access
+
+- OpenAPI document: [/openapi.json](/openapi.json)
+- Markdown for LLMs: [/llms.txt](/llms.txt)
+- MCP server (Streamable HTTP): `/mcp` — every documented operation is exposed as a tool, so AI agents can explore prices, quotes, and deployments directly.
+
+## Servers
+
+- **URL:** `/`
+  - **Description:** This deployment
+
+## Operations
+
+### Health and deployment summary
+
+- **Method:** `GET`
+- **Path:** `/health`
+- **Tags:** Meta
+
+Liveness probe reporting the configured chain, enabled venues, and SwapShell.
+
+#### Responses
+
+##### Status: 200 Service is up
+
+###### Content-Type: application/json
+
+- **`chainId` (required)**
+
+  `integer` — Chain this router instance serves
+
+- **`ok` (required)**
+
+  `boolean`
+
+- **`swapShell` (required)**
+
+  `object` — SwapShell settlement contract, if configured
+
+- **`venues` (required)**
+
+  `array` — Venues enabled on this chain
+
+  **Items:**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "ok": true,
+  "chainId": 4663,
+  "venues": [
+    "zerox"
+  ],
+  "swapShell": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+}
+```
+
+### Chain deployment addresses
+
+- **Method:** `GET`
+- **Path:** `/v1/deployment`
+- **Tags:** Meta
+
+Contract addresses integrators need on this chain: Permit2, SwapShell, ArcusSettlement, the wrapped-token stack, and the gasless-deposit proxy.
+
+#### Responses
+
+##### Status: 200 Deployment addresses
+
+###### Content-Type: application/json
+
+- **`chainId` (required)**
+
+  `integer`
+
+- **`contracts` (required)**
+
+  `object`
+
+  - **`arcusRfqExecutor` (required)**
+
+    `object`
+
+  - **`arcusSettlement` (required)**
+
+    `object` — ArcusSettlement proxy
+
+  - **`arcusWrappedEscrow` (required)**
+
+    `object`
+
+  - **`arcusWrappedExecutor` (required)**
+
+    `object`
+
+  - **`arcusWrappedTokenBeacon` (required)**
+
+    `object`
+
+  - **`arcusWrappedTokenFactory` (required)**
+
+    `object`
+
+  - **`bebopRouter` (required)**
+
+    `object` — Bebop Permit2 settlement router
+
+  - **`depositPermit2` (required)**
+
+    `object` — Permit2 instance the deposit stack verifies against
+
+  - **`multicall3` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`permit2` (required)**
+
+    `string` — Canonical Permit2
+
+  - **`signedDepositProxy` (required)**
+
+    `object` — Gasless perp-deposit router
+
+  - **`swapShell` (required)**
+
+    `object` — SwapShell swap entrypoint
+
+- **`slug` (required)**
+
+  `string`
+
+- **`venues` (required)**
+
+  `array`
+
+  **Items:**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "chainId": -9007199254740991,
+  "slug": "robinhood-mainnet",
+  "venues": [
+    "zerox"
+  ],
+  "contracts": {
+    "permit2": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "multicall3": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "swapShell": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "arcusSettlement": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "arcusRfqExecutor": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "arcusWrappedEscrow": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "arcusWrappedExecutor": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "arcusWrappedTokenFactory": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "arcusWrappedTokenBeacon": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "signedDepositProxy": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "bebopRouter": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "depositPermit2": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+  }
+}
+```
+
+##### Status: 429 Rate limited — retry after the \`Retry-After\` header elapses
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+### Tradable token list
+
+- **Method:** `GET`
+- **Path:** `/v1/tokens`
+- **Tags:** Meta
+
+Static token presets merged with admin-managed listings, each with its CREATE2-predicted wrapped address when wrapped routing is configured.
+
+#### Responses
+
+##### Status: 200 Token list
+
+###### Content-Type: application/json
+
+**Array of:**
+
+- **`address` (required)**
+
+  `string` — 0x-prefixed 20-byte EVM address
+
+- **`category` (required)**
+
+  `string`, possible values: `"stock", "commodity", "crypto", "index", "meme", "pToken"`
+
+- **`chainId` (required)**
+
+  `integer`
+
+- **`decimals` (required)**
+
+  `integer`
+
+- **`name` (required)**
+
+  `string`
+
+- **`source` (required)**
+
+  `string` — Where the listing came from (static preset or admin)
+
+- **`symbol` (required)**
+
+  `string`
+
+- **`verified` (required)**
+
+  `boolean` — Curated/real-world asset flag; meme tokens start false
+
+- **`wrappedTokenAddress` (required)**
+
+  `object` — CREATE2-predicted wrapped (synthetic) representation, or null when wrapped routing is not configured on this chain
+
+- **`addedTimestamp`**
+
+  `integer` — When the token was first listed, unix ms UTC; absent for pre-tracking records
+
+**Example:**
+
+```json
+[
+  {
+    "chainId": -9007199254740991,
+    "symbol": "TSLA",
+    "name": "Tesla",
+    "address": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "decimals": -9007199254740991,
+    "source": "",
+    "category": "stock",
+    "addedTimestamp": -9007199254740991,
+    "verified": true,
+    "wrappedTokenAddress": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+  }
+]
+```
+
+##### Status: 429 Rate limited — retry after the \`Retry-After\` header elapses
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+### Indicative multi-venue price
+
+- **Method:** `GET`
+- **Path:** `/v1/price`
+- **Tags:** Pricing
+
+Fans out to enabled venues that list both the sell and buy token addresses and returns indicative prices for rate display, plus the router's `recommended` venue and `details` (RFQ makers, Uniswap pools, …). No commitment — use GET /v1/quote for an executable quote.
+
+#### Parameters
+
+##### `chainId`
+
+- **In:** `query`
+
+Optional sanity check; must match the router chain (see GET /health) when present
+
+`integer`
+
+##### `sellToken` required
+
+- **In:** `query`
+
+Token being sold
+
+`string`
+
+##### `buyToken` required
+
+- **In:** `query`
+
+Token being bought (use 0xEeee…EEeE for native ETH where supported)
+
+`string`
+
+##### `sellAmount` required
+
+- **In:** `query`
+
+Positive sell amount in base units (base-10 string)
+
+`string`
+
+##### `allowWrapped`
+
+- **In:** `query`
+
+Opt in to wrapped (synthetic) settlement of the buy token; must match the signed intent. Default false.
+
+`string`, possible values: `"true", "false"`
+
+##### `smartWallet`
+
+- **In:** `query`
+
+Taker's delegated EIP-7702 smart-wallet implementation address; venues that can't verify its signatures are skipped
+
+`string`
+
+##### `sourceInclude`
+
+- **In:** `query`
+
+Comma-separated venues eligible to win `recommended`
+
+`string`
+
+##### `sourceExclude`
+
+- **In:** `query`
+
+Comma-separated venues excluded from winning `recommended`
+
+`string`
+
+##### `builderFeeBps`
+
+- **In:** `query`
+
+Per-request builder fee in human bps. Requires X-Api-Key. Must be ≤ the key's max builderFeeBps; omitted or 0 collects none. Paid to the key's builderFeeRecipient. Repeat the same value on /v1/submit. Combined with protocol bps, also capped by ARCUS\_MAX\_TOTAL\_FEE\_BPS.
+
+`number`
+
+#### Responses
+
+##### Status: 200 Indicative prices per venue
+
+###### Content-Type: application/json
+
+- **`all` (required)**
+
+  `array`
+
+  **Items:**
+
+  - **`buyAmount` (required)**
+
+    `string` — Indicative output amount in buyToken base units
+
+  - **`details` (required)**
+
+    `object` — How the quoted output was sourced
+
+    - **`paths` (required)**
+
+      `array` — Parallel split of the sell amount
+
+      **Items:**
+
+      - **`hops` (required)**
+
+        `array` — Ordered hops on this path
+
+        **Items:**
+
+        - **`protocol` (required)**
+
+          `string` — Kebab-case protocol, e.g. rfq, uniswap-v3, uniswap-v4, circus, 1inch
+
+        - **`feeTier`**
+
+          `integer` — Uniswap pool fee tier, e.g. 500 for 0.05%
+
+        - **`from`**
+
+          `string` — Hop input token
+
+        - **`id`**
+
+          `string` — RFQ maker id when protocol is rfq
+
+        - **`pool`**
+
+          `string` — V2/V3 pool address, or V4 PoolId
+
+        - **`to`**
+
+          `string` — Hop output token
+
+      - **`proportionBps` (required)**
+
+        `integer` — Share of the sell amount on this path (10000 = 100%)
+
+  - **`fees` (required)**
+
+    `array`
+
+    **Items:**
+
+    - **`amount` (required)**
+
+      `string` — uint256 as a base-10 string (token base units)
+
+    - **`token` (required)**
+
+      `string` — 0x-prefixed 20-byte EVM address
+
+    - **`type` (required)**
+
+      `string` — Fee type label from the venue
+
+    - **`amountUsd`**
+
+      `number`
+
+  - **`sellAmount` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+  - **`raw`**
+
+    `object` — Venue-specific raw price payload (shape varies per venue)
+
+  - **`stale`**
+
+    `boolean` — True when served from the stale-on-error cache after an upstream blip
+
+- **`details` (required)**
+
+  `object` — Liquidity legs of the recommended price
+
+  - **`paths` (required)**
+
+    `array` — Parallel split of the sell amount
+
+    **Items:**
+
+    - **`hops` (required)**
+
+      `array` — Ordered hops on this path
+
+      **Items:**
+
+      - **`protocol` (required)**
+
+        `string` — Kebab-case protocol, e.g. rfq, uniswap-v3, uniswap-v4, circus, 1inch
+
+      - **`feeTier`**
+
+        `integer` — Uniswap pool fee tier, e.g. 500 for 0.05%
+
+      - **`from`**
+
+        `string` — Hop input token
+
+      - **`id`**
+
+        `string` — RFQ maker id when protocol is rfq
+
+      - **`pool`**
+
+        `string` — V2/V3 pool address, or V4 PoolId
+
+      - **`to`**
+
+        `string` — Hop output token
+
+    - **`proportionBps` (required)**
+
+      `integer` — Share of the sell amount on this path (10000 = 100%)
+
+- **`errors` (required)**
+
+  `array` — Venues that failed to price this request
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+- **`recommended` (required)**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Venue the router recommends (best effective output)
+
+- **`referencePrice` (required)**
+
+  `object` — Reference rate in human buyToken units per human sellToken unit (Robinhood midpoint; Arcus vault NAV per share for pTokens), or null when unavailable
+
+- **`referencePriceSource` (required)**
+
+  `string`, possible values: `"robinhood", "vaults", "robinhood+vaults"` — Feed(s) used to derive the reference price
+
+- **`referencePriceTimestamp` (required)**
+
+  `object` — Oldest contributing source timestamp, Unix milliseconds UTC
+
+- **`venue` (required)**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Winning venue. Same value as \`recommended\`.
+
+**Example:**
+
+```json
+{
+  "recommended": "zerox",
+  "venue": "zerox",
+  "referencePrice": "",
+  "referencePriceTimestamp": -9007199254740991,
+  "referencePriceSource": "robinhood",
+  "details": {
+    "paths": [
+      {
+        "proportionBps": -9007199254740991,
+        "hops": [
+          {
+            "protocol": "",
+            "id": "",
+            "feeTier": -9007199254740991,
+            "pool": "",
+            "from": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+            "to": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+          }
+        ]
+      }
+    ]
+  },
+  "all": [
+    {
+      "venue": "zerox",
+      "details": {
+        "paths": [
+          {
+            "proportionBps": -9007199254740991,
+            "hops": [
+              {
+                "protocol": "",
+                "id": "",
+                "feeTier": -9007199254740991,
+                "pool": "",
+                "from": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+                "to": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+              }
+            ]
+          }
+        ]
+      },
+      "buyAmount": "10000000",
+      "sellAmount": "10000000",
+      "fees": [
+        {
+          "amount": "10000000",
+          "token": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+          "type": "",
+          "amountUsd": 1
+        }
+      ],
+      "raw": {},
+      "stale": true
+    }
+  ],
+  "errors": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 400 Invalid request — \`code\` identifies the failing parameter
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 422 No venue could serve the request (including no liquidity, minimum notional, or all venues failed); per-venue reasons in \`details\`
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 429 Rate limited — retry after the \`Retry-After\` header elapses
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+### Firm multi-venue quote
+
+- **Method:** `GET`
+- **Path:** `/v1/quote`
+- **Tags:** Pricing
+
+Returns firm, signable quotes from enabled venues that list both the sell and buy token addresses. Pick one (usually `recommended`), have the taker sign its `toSign` EIP-712 payload, then POST /v1/submit. Each quote carries `details` for the liquidity legs. Arcus native-ETH BUY quotes return a ready-to-broadcast `transaction` instead of `toSign`.
+
+#### Parameters
+
+##### `chainId`
+
+- **In:** `query`
+
+Optional sanity check; must match the router chain (see GET /health) when present
+
+`integer`
+
+##### `sellToken` required
+
+- **In:** `query`
+
+Token being sold
+
+`string`
+
+##### `buyToken` required
+
+- **In:** `query`
+
+Token being bought (use 0xEeee…EEeE for native ETH where supported)
+
+`string`
+
+##### `sellAmount` required
+
+- **In:** `query`
+
+Positive sell amount in base units (base-10 string)
+
+`string`
+
+##### `allowWrapped`
+
+- **In:** `query`
+
+Opt in to wrapped (synthetic) settlement of the buy token; must match the signed intent. Default false.
+
+`string`, possible values: `"true", "false"`
+
+##### `smartWallet`
+
+- **In:** `query`
+
+Taker's delegated EIP-7702 smart-wallet implementation address; venues that can't verify its signatures are skipped
+
+`string`
+
+##### `sourceInclude`
+
+- **In:** `query`
+
+Comma-separated venues eligible to win `recommended`
+
+`string`
+
+##### `sourceExclude`
+
+- **In:** `query`
+
+Comma-separated venues excluded from winning `recommended`
+
+`string`
+
+##### `builderFeeBps`
+
+- **In:** `query`
+
+Per-request builder fee in human bps. Requires X-Api-Key. Must be ≤ the key's max builderFeeBps; omitted or 0 collects none. Paid to the key's builderFeeRecipient. Repeat the same value on /v1/submit. Combined with protocol bps, also capped by ARCUS\_MAX\_TOTAL\_FEE\_BPS.
+
+`number`
+
+##### `taker` required
+
+- **In:** `query`
+
+Wallet that will sign the settlement payload
+
+`string`
+
+##### `slippageBps`
+
+- **In:** `query`
+
+Max slippage in basis points (0–10000)
+
+`integer`
+
+#### Responses
+
+##### Status: 200 Firm quotes per venue
+
+###### Content-Type: application/json
+
+- **`all` (required)**
+
+  `array`
+
+  **Items:**
+
+  - **`buyAmount` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+  - **`details` (required)**
+
+    `object` — How the quoted output was sourced
+
+    - **`paths` (required)**
+
+      `array` — Parallel split of the sell amount
+
+      **Items:**
+
+      - **`hops` (required)**
+
+        `array` — Ordered hops on this path
+
+        **Items:**
+
+        - **`protocol` (required)**
+
+          `string` — Kebab-case protocol, e.g. rfq, uniswap-v3, uniswap-v4, circus, 1inch
+
+        - **`feeTier`**
+
+          `integer` — Uniswap pool fee tier, e.g. 500 for 0.05%
+
+        - **`from`**
+
+          `string` — Hop input token
+
+        - **`id`**
+
+          `string` — RFQ maker id when protocol is rfq
+
+        - **`pool`**
+
+          `string` — V2/V3 pool address, or V4 PoolId
+
+        - **`to`**
+
+          `string` — Hop output token
+
+      - **`proportionBps` (required)**
+
+        `integer` — Share of the sell amount on this path (10000 = 100%)
+
+  - **`fees` (required)**
+
+    `array`
+
+    **Items:**
+
+    - **`amount` (required)**
+
+      `string` — uint256 as a base-10 string (token base units)
+
+    - **`token` (required)**
+
+      `string` — 0x-prefixed 20-byte EVM address
+
+    - **`type` (required)**
+
+      `string` — Fee type label from the venue
+
+    - **`amountUsd`**
+
+      `number`
+
+  - **`sellAmount` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+  - **`expiry`**
+
+    `integer` — Unix seconds the quote is valid until
+
+  - **`minBuyAmount`**
+
+    `string` — Slippage-floored output the settlement enforces (venue-dependent field name)
+
+  - **`quoteId`**
+
+    `string` — Venue-side quote handle (bebop, rialto, lifi)
+
+  - **`raw`**
+
+    `object` — Venue-specific raw quote payload; lifi requires echoing it back on submit
+
+  - **`toSign`**
+
+    `object` — EIP-712 payload the taker signs, echoed back to POST /v1/submit as \`typedData\`. Absent for Arcus native-BUY quotes that return \`transaction\` instead.
+
+    - **`domain` (required)**
+
+      `object` — EIP-712 domain (name, chainId, verifyingContract)
+
+    - **`message` (required)**
+
+      `object` — EIP-712 message to sign
+
+    - **`primaryType` (required)**
+
+      `string`
+
+    - **`types` (required)**
+
+      `object` — EIP-712 type definitions
+
+  - **`transaction`**
+
+    `object` — Arcus native-ETH BUY only: ready-to-broadcast tx the taker sends directly with msg.value (no signing, no /v1/submit)
+
+    - **`data` (required)**
+
+      `string` — 0x-prefixed hex byte string
+
+    - **`to` (required)**
+
+      `string` — 0x-prefixed 20-byte EVM address
+
+    - **`value` (required)**
+
+      `string` — uint256 as a base-10 string (token base units)
+
+  - **`tx`**
+
+    `object` — Prepared venue tx envelope echoed back to /v1/submit (bebop, rialto, lifi)
+
+- **`details` (required)**
+
+  `object` — Liquidity legs of the recommended quote
+
+  - **`paths` (required)**
+
+    `array` — Parallel split of the sell amount
+
+    **Items:**
+
+    - **`hops` (required)**
+
+      `array` — Ordered hops on this path
+
+      **Items:**
+
+      - **`protocol` (required)**
+
+        `string` — Kebab-case protocol, e.g. rfq, uniswap-v3, uniswap-v4, circus, 1inch
+
+      - **`feeTier`**
+
+        `integer` — Uniswap pool fee tier, e.g. 500 for 0.05%
+
+      - **`from`**
+
+        `string` — Hop input token
+
+      - **`id`**
+
+        `string` — RFQ maker id when protocol is rfq
+
+      - **`pool`**
+
+        `string` — V2/V3 pool address, or V4 PoolId
+
+      - **`to`**
+
+        `string` — Hop output token
+
+    - **`proportionBps` (required)**
+
+      `integer` — Share of the sell amount on this path (10000 = 100%)
+
+- **`errors` (required)**
+
+  `array`
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+- **`recommended` (required)**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+- **`referencePrice` (required)**
+
+  `object` — Reference rate in human buyToken units per human sellToken unit (Robinhood midpoint; Arcus vault NAV per share for pTokens), or null when unavailable
+
+- **`referencePriceSource` (required)**
+
+  `string`, possible values: `"robinhood", "vaults", "robinhood+vaults"` — Feed(s) used to derive the reference price
+
+- **`referencePriceTimestamp` (required)**
+
+  `object` — Oldest contributing source timestamp, Unix milliseconds UTC
+
+- **`venue` (required)**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Winning venue. Same value as \`recommended\`.
+
+**Example:**
+
+```json
+{
+  "recommended": "zerox",
+  "venue": "zerox",
+  "referencePrice": "",
+  "referencePriceTimestamp": -9007199254740991,
+  "referencePriceSource": "robinhood",
+  "details": {
+    "paths": [
+      {
+        "proportionBps": -9007199254740991,
+        "hops": [
+          {
+            "protocol": "",
+            "id": "",
+            "feeTier": -9007199254740991,
+            "pool": "",
+            "from": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+            "to": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+          }
+        ]
+      }
+    ]
+  },
+  "all": [
+    {
+      "venue": "zerox",
+      "details": {
+        "paths": [
+          {
+            "proportionBps": -9007199254740991,
+            "hops": [
+              {
+                "protocol": "",
+                "id": "",
+                "feeTier": -9007199254740991,
+                "pool": "",
+                "from": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+                "to": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+              }
+            ]
+          }
+        ]
+      },
+      "buyAmount": "10000000",
+      "sellAmount": "10000000",
+      "fees": [
+        {
+          "amount": "10000000",
+          "token": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+          "type": "",
+          "amountUsd": 1
+        }
+      ],
+      "minBuyAmount": "10000000",
+      "expiry": -9007199254740991,
+      "quoteId": "",
+      "toSign": {
+        "domain": {},
+        "types": {},
+        "primaryType": "PermitWitnessTransferFrom",
+        "message": {}
+      },
+      "transaction": {
+        "to": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+        "data": "",
+        "value": "10000000"
+      },
+      "tx": {},
+      "raw": {}
+    }
+  ],
+  "errors": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 400 Invalid request — \`code\` identifies the failing parameter
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 422 No venue could serve the request (including no liquidity, minimum notional, or all venues failed); per-venue reasons in \`details\`
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 429 Rate limited — retry after the \`Retry-After\` header elapses
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+### Swap transaction status
+
+- **Method:** `GET`
+- **Path:** `/v1/status`
+- **Tags:** Execution
+
+Looks up the on-chain transaction returned by POST /v1/submit and decodes the SwapExecuted event once mined. Failed swaps may carry `errorCode: "SLIPPAGE_EXCEEDED"` — prompt the user to retry.
+
+#### Parameters
+
+##### `chainId`
+
+- **In:** `query`
+
+Optional sanity check; must match the router chain (see GET /health) when present
+
+`integer`
+
+##### `venue` required
+
+- **In:** `query`
+
+Venue the swap was submitted through
+
+`string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"`
+
+##### `id` required
+
+- **In:** `query`
+
+Transaction hash from the submit response
+
+`string`
+
+#### Responses
+
+##### Status: 200 Transaction status
+
+###### Content-Type: application/json
+
+- **`errorCode` (required)**
+
+  `object` — Normalized failure code, e.g. "SLIPPAGE\_EXCEEDED" — prompt the user to retry
+
+- **`reason` (required)**
+
+  `object` — Decoded revert / soft-fail reason for failed transactions
+
+- **`status` (required)**
+
+  `string`, possible values: `"pending", "confirmed", "failed", "unknown"` — On-chain transaction status
+
+- **`swap` (required)**
+
+  `object`
+
+- **`txHash` (required)**
+
+  `string` — 0x-prefixed 32-byte transaction hash
+
+- **`venue` (required)**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+- **`blockNumber`**
+
+  `string` — Present once mined
+
+**Example:**
+
+```json
+{
+  "venue": "zerox",
+  "status": "pending",
+  "txHash": "",
+  "blockNumber": "10000000",
+  "reason": "",
+  "errorCode": "",
+  "swap": {
+    "taker": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "tokenIn": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "tokenOut": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "minAmountOut": "10000000",
+    "amountIn": "10000000",
+    "quotedAmountIn": "10000000",
+    "quotedAmountOut": "10000000",
+    "amountOut": "10000000",
+    "tokenInBenchmarkPrice": "10000000",
+    "tokenOutBenchmarkPrice": "10000000",
+    "router": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+    "routeTag": "",
+    "routeTagLabel": "ARCUS",
+    "apiKeyId": "",
+    "success": true,
+    "reason": ""
+  }
+}
+```
+
+##### Status: 400 Invalid request — \`code\` identifies the failing parameter
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 429 Rate limited — retry after the \`Retry-After\` header elapses
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+### Submit a signed swap
+
+- **Method:** `POST`
+- **Path:** `/v1/submit`
+- **Tags:** Execution
+
+Broadcasts a taker-signed settlement, gas paid by the router's relayer. The body is discriminated by `venue`: arcus is relayed to the aggregator; zerox/bebop/rialto/lifi are submitted through SwapShell after the typed-data domain is pinned and the signature verified. Poll GET /v1/status with the returned `txHash`.
+
+#### Request Body
+
+##### Content-Type: application/json
+
+**One of:**
+
+- **`signature` (required)**
+
+  `string` — EIP-712 signature hex. 65-byte ECDSA (or EIP-2098 64-byte compact where noted); ERC-1271 smart-account signatures may be longer where supported.
+
+- **`taker` (required)**
+
+  `string` — Wallet that signed the quote payload
+
+- **`typedData` (required)**
+
+  `object` — The signed TakerIntent Permit2 payload from /v1/quote toSign
+
+  - **`domain` (required)**
+
+    `object` — EIP-712 domain (name, chainId, verifyingContract)
+
+  - **`message` (required)**
+
+    `object` — EIP-712 message to sign
+
+  - **`primaryType` (required)**
+
+    `string`
+
+  - **`types` (required)**
+
+    `object` — EIP-712 type definitions
+
+- **`venue` (required)**
+
+  `string`
+
+- **`builderFeeBps`**
+
+  `number` — Same per-request builder bps as /v1/quote (must be ≤ the key max)
+
+- **`buyToken`**
+
+  `string` — Requested buy token; the native-ETH sentinel (0xEeee…EEeE) selects native delivery
+
+- **`chainId`**
+
+  `integer` — Must match the router chain when present (see GET /health)
+
+- **`permits`**
+
+  `array`
+
+  **Items:**
+
+  - **`deadline` (required)**
+
+    `string` — Unix seconds
+
+  - **`r` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`s` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`token` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`v` (required)**
+
+    `integer`
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+- **`routeTag`**
+
+  `string` — Discriminator surfaced as bytes32 in the SwapExecuted event
+
+* **`signature` (required)**
+
+  `string` — EIP-712 signature hex. 65-byte ECDSA (or EIP-2098 64-byte compact where noted); ERC-1271 smart-account signatures may be longer where supported.
+
+* **`taker` (required)**
+
+  `string` — Wallet that signed the quote payload
+
+* **`typedData` (required)**
+
+  `object` — Permit2 PermitWitnessTransferFrom from the 0x quote
+
+  - **`domain` (required)**
+
+    `object` — EIP-712 domain (name, chainId, verifyingContract)
+
+  - **`message` (required)**
+
+    `object` — EIP-712 message to sign
+
+  - **`primaryType` (required)**
+
+    `string`
+
+  - **`types` (required)**
+
+    `object` — EIP-712 type definitions
+
+* **`venue` (required)**
+
+  `string`
+
+* **`chainId`**
+
+  `integer` — Must match the router chain when present (see GET /health)
+
+* **`permits`**
+
+  `array`
+
+  **Items:**
+
+  - **`deadline` (required)**
+
+    `string` — Unix seconds
+
+  - **`r` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`s` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`token` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`v` (required)**
+
+    `integer`
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+* **`quotedAmountIn`**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+* **`quotedAmountOut`**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+* **`routeTag`**
+
+  `string` — Discriminator surfaced as bytes32 in the SwapExecuted event
+
+- **`signature` (required)**
+
+  `string` — EIP-712 signature hex. 65-byte ECDSA (or EIP-2098 64-byte compact where noted); ERC-1271 smart-account signatures may be longer where supported.
+
+- **`taker` (required)**
+
+  `string` — Wallet that signed the quote payload
+
+- **`tx` (required)**
+
+  `object` — Prepared RialtoRouter tx echoed from /v1/quote
+
+  - **`data` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`signatureOffset` (required)**
+
+    `integer` — Byte offset where the 65-byte taker signature is spliced into \`data\`
+
+  - **`to` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+  - **`estimatedGas`**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+- **`typedData` (required)**
+
+  `object` — EIP-712 typed-data payload
+
+  - **`domain` (required)**
+
+    `object` — EIP-712 domain (name, chainId, verifyingContract)
+
+  - **`message` (required)**
+
+    `object` — EIP-712 message to sign
+
+  - **`primaryType` (required)**
+
+    `string`
+
+  - **`types` (required)**
+
+    `object` — EIP-712 type definitions
+
+- **`venue` (required)**
+
+  `string`
+
+- **`chainId`**
+
+  `integer` — Must match the router chain when present (see GET /health)
+
+- **`permits`**
+
+  `array`
+
+  **Items:**
+
+  - **`deadline` (required)**
+
+    `string` — Unix seconds
+
+  - **`r` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`s` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`token` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`v` (required)**
+
+    `integer`
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+- **`quotedAmountIn`**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+- **`quotedAmountOut`**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+- **`routeTag`**
+
+  `string` — Discriminator surfaced as bytes32 in the SwapExecuted event
+
+* **`raw` (required)**
+
+  `object` — The raw LI.FI quote from /v1/quote, echoed back for buyToken/min-out validation
+
+* **`signature` (required)**
+
+  `string` — EIP-712 signature hex. 65-byte ECDSA (or EIP-2098 64-byte compact where noted); ERC-1271 smart-account signatures may be longer where supported.
+
+* **`taker` (required)**
+
+  `string` — Wallet that signed the quote payload
+
+* **`tx` (required)**
+
+  `object` — Prepared LI.FI diamond call echoed from /v1/quote
+
+  - **`buyToken` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`diamondCalldata` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`permit2Proxy` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+  - **`estimatedGas`**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+* **`typedData` (required)**
+
+  `object` — EIP-712 typed-data payload
+
+  - **`domain` (required)**
+
+    `object` — EIP-712 domain (name, chainId, verifyingContract)
+
+  - **`message` (required)**
+
+    `object` — EIP-712 message to sign
+
+  - **`primaryType` (required)**
+
+    `string`
+
+  - **`types` (required)**
+
+    `object` — EIP-712 type definitions
+
+* **`venue` (required)**
+
+  `string`
+
+* **`chainId`**
+
+  `integer` — Must match the router chain when present (see GET /health)
+
+* **`minBuyAmount`**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+* **`permits`**
+
+  `array`
+
+  **Items:**
+
+  - **`deadline` (required)**
+
+    `string` — Unix seconds
+
+  - **`r` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`s` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`token` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`v` (required)**
+
+    `integer`
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+* **`quotedAmountIn`**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+* **`quotedAmountOut`**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+* **`routeTag`**
+
+  `string` — Discriminator surfaced as bytes32 in the SwapExecuted event
+
+- **`signature` (required)**
+
+  `string` — EIP-712 signature hex. 65-byte ECDSA (or EIP-2098 64-byte compact where noted); ERC-1271 smart-account signatures may be longer where supported.
+
+- **`taker` (required)**
+
+  `string` — Wallet that signed the quote payload
+
+- **`tx` (required)**
+
+  `object`
+
+  - **`data` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`originAddress` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`to` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+- **`typedData` (required)**
+
+  `object` — EIP-712 typed-data payload
+
+  - **`domain` (required)**
+
+    `object` — EIP-712 domain (name, chainId, verifyingContract)
+
+  - **`message` (required)**
+
+    `object` — EIP-712 message to sign
+
+  - **`primaryType` (required)**
+
+    `string`
+
+  - **`types` (required)**
+
+    `object` — EIP-712 type definitions
+
+- **`venue` (required)**
+
+  `string`
+
+- **`chainId`**
+
+  `integer` — Must match the router chain when present (see GET /health)
+
+- **`permits`**
+
+  `array`
+
+  **Items:**
+
+  - **`deadline` (required)**
+
+    `string` — Unix seconds
+
+  - **`r` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`s` (required)**
+
+    `string` — 0x-prefixed hex byte string
+
+  - **`token` (required)**
+
+    `string` — 0x-prefixed 20-byte EVM address
+
+  - **`v` (required)**
+
+    `integer`
+
+  - **`value` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+- **`routeTag`**
+
+  `string` — Discriminator surfaced as bytes32 in the SwapExecuted event
+
+**Example:**
+
+```json
+{
+  "venue": "arcus",
+  "chainId": -9007199254740991,
+  "taker": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+  "signature": "",
+  "permits": [
+    {
+      "token": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+      "value": "10000000",
+      "deadline": "10000000",
+      "v": -9007199254740991,
+      "r": "",
+      "s": ""
+    }
+  ],
+  "routeTag": "",
+  "typedData": {
+    "domain": {},
+    "types": {},
+    "primaryType": "PermitWitnessTransferFrom",
+    "message": {}
+  },
+  "buyToken": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+  "builderFeeBps": 1
+}
+```
+
+#### Responses
+
+##### Status: 200 Submission accepted and broadcast
+
+###### Content-Type: application/json
+
+- **`details` (required)**
+
+  `object` — Liquidity legs that filled this submit
+
+  - **`paths` (required)**
+
+    `array` — Parallel split of the sell amount
+
+    **Items:**
+
+    - **`hops` (required)**
+
+      `array` — Ordered hops on this path
+
+      **Items:**
+
+      - **`protocol` (required)**
+
+        `string` — Kebab-case protocol, e.g. rfq, uniswap-v3, uniswap-v4, circus, 1inch
+
+      - **`feeTier`**
+
+        `integer` — Uniswap pool fee tier, e.g. 500 for 0.05%
+
+      - **`from`**
+
+        `string` — Hop input token
+
+      - **`id`**
+
+        `string` — RFQ maker id when protocol is rfq
+
+      - **`pool`**
+
+        `string` — V2/V3 pool address, or V4 PoolId
+
+      - **`to`**
+
+        `string` — Hop output token
+
+    - **`proportionBps` (required)**
+
+      `integer` — Share of the sell amount on this path (10000 = 100%)
+
+- **`status` (required)**
+
+  `string`
+
+- **`txHash` (required)**
+
+  `string` — On-chain settlement tx — poll GET /v1/status with it
+
+- **`venue` (required)**
+
+  `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "venue": "zerox",
+  "details": {
+    "paths": [
+      {
+        "proportionBps": -9007199254740991,
+        "hops": [
+          {
+            "protocol": "",
+            "id": "",
+            "feeTier": -9007199254740991,
+            "pool": "",
+            "from": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+            "to": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5"
+          }
+        ]
+      }
+    ]
+  },
+  "txHash": "",
+  "status": "submitted"
+}
+```
+
+##### Status: 400 Invalid request — \`code\` identifies the failing parameter
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 422 Submit not completed — read \`code\` (venue not configured, aggregator unreachable, revert, broadcast fault)
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 429 Rate limited — retry after the \`Retry-After\` header elapses
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+### Relay a gasless spot → perp deposit
+
+- **Method:** `POST`
+- **Path:** `/v1/deposit`
+- **Tags:** Deposits
+
+Relays an EIP-712 signed deposit into SignedDepositProxy with relayer-paid gas. The router rebuilds the Permit2 typed data from the request fields, so every parameter is covered by the signature check; Permit2 re-verifies on-chain. Include the optional ERC-2612 `permit` for fully gasless first-time deposits.
+
+#### Request Body
+
+##### Content-Type: application/json
+
+- **`accountIndex` (required)**
+
+  `integer` — uint16 perp account index
+
+- **`amount` (required)**
+
+  `string` — uint256 as a base-10 string (token base units)
+
+- **`anyoneCanExecuteCancel` (required)**
+
+  `boolean` — Bound into the signed witness
+
+- **`deadline` (required)**
+
+  `string` — Unix seconds; the signature is void after this
+
+- **`destination` (required)**
+
+  `object` — "paxosDepositProxy" (1) for USDG; "bridgeVault" (0) for stock tokens
+
+- **`owner` (required)**
+
+  `string` — Signer / token owner; the deposit is credited to this address
+
+- **`permitNonce` (required)**
+
+  `string` — Random Permit2 nonce from the signed envelope
+
+- **`signature` (required)**
+
+  `string` — 65-byte (or EIP-2098 64-byte) EIP-712 signature over the Permit2 PermitWitnessTransferFrom with SignedDepositWitness
+
+- **`token` (required)**
+
+  `string` — Token to deposit
+
+- **`chainId`**
+
+  `integer` — Must match the router chain when present
+
+- **`permit`**
+
+  `object` — Optional ERC-2612 permit granting Permit2 an allowance, relayed on-chain right before the deposit so first-time depositors need no gas
+
+  - **`deadline` (required)**
+
+    `string` — uint256 as a base-10 string (token base units)
+
+  - **`signature` (required)**
+
+    `string` — 65-byte signature over the token's own ERC-2612 Permit
+
+  - **`value` (required)**
+
+    `string` — Must cover \`amount\`; sign max-uint for a one-time permit
+
+**Example:**
+
+```json
+{
+  "chainId": -9007199254740991,
+  "owner": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+  "accountIndex": 0,
+  "token": "0xf64780eAE9CFe162EF38f5224459a014a1007cd5",
+  "amount": "10000000",
+  "destination": "bridgeVault",
+  "anyoneCanExecuteCancel": true,
+  "permitNonce": "10000000",
+  "deadline": "10000000",
+  "signature": "",
+  "permit": {
+    "value": "10000000",
+    "deadline": "10000000",
+    "signature": ""
+  }
+}
+```
+
+#### Responses
+
+##### Status: 200 Deposit relayed
+
+###### Content-Type: application/json
+
+- **`status` (required)**
+
+  `string`
+
+- **`txHash` (required)**
+
+  `string` — 0x-prefixed 32-byte transaction hash
+
+- **`permitTxHash`**
+
+  `string` — Present when an ERC-2612 permit was relayed
+
+**Example:**
+
+```json
+{
+  "txHash": "",
+  "status": "submitted",
+  "permitTxHash": ""
+}
+```
+
+##### Status: 400 Invalid request — \`code\` identifies the failing parameter
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 422 Deposit not completed — read \`code\` (proxy not configured, simulation revert, broadcast fault)
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```
+
+##### Status: 429 Rate limited — retry after the \`Retry-After\` header elapses
+
+###### Content-Type: application/json
+
+- **`code` (required)**
+
+  `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "RATE_LIMITED", "CHAIN_ID_INVALID", "CHAIN_ID_MISMATCH", "MISSING_PRICE_PARAMS", "MISSING_QUOTE_PARAMS", "INVALID_SELL_TOKEN", "INVALID_BUY_TOKEN", "INVALID_TAKER", "INVALID_SELL_AMOUNT", "INVALID_SOURCE_INCLUDE", "INVALID_SOURCE_EXCLUDE", "INVALID_SLIPPAGE_BPS", "INVALID_ALLOW_WRAPPED", "INVALID_BUILDER_FEE_BPS", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "INVALID_SMART_WALLET", "INVALID_STATUS_VENUE", "STATUS_ID_REQUIRED", "INVALID_ZEROX_TRADE_HASH", "ZEROX_STATUS_FAILED", "INVALID_JSON_BODY", "UNKNOWN_SUBMIT_VENUE", "RIALTO_SUBMIT_FIELDS_REQUIRED", "RIALTO_ROUTER_MISMATCH", "BEBOP_SUBMIT_FIELDS_REQUIRED", "BEBOP_CALLDATA_MISMATCH", "LIFI_SUBMIT_FIELDS_REQUIRED", "LIFI_ROUTER_MISMATCH", "LIFI_CALLDATA_MISMATCH", "LIFI_BUY_TOKEN_MISMATCH", "ZEROX_TRADE_FIELDS_REQUIRED", "TYPED_DATA_CHAIN_ID_MISMATCH", "SETTLEMENT_NOT_PINNED", "SIGNATURE_VERIFICATION_FAILED", "TRADE_SIGNATURE_VERIFICATION_FAILED", "APPROVAL_SIGNATURE_VERIFICATION_FAILED", "SIGNATURE_PARSE_ERROR", "ZEROX_SUBMIT_FAILED", "ARCUS_SUBMIT_FIELDS_REQUIRED", "ARCUS_WITNESS_MISSING", "ARCUS_TAKER_MISMATCH", "ARCUS_BUILD_CALLDATA_FAILED", "ARCUS_NOT_CONFIGURED", "SHELL_SUBMIT_FAILED", "INTERNAL_ERROR", "DEPOSIT_FIELDS_REQUIRED", "DEPOSIT_NOT_CONFIGURED", "DEPOSIT_DEADLINE_EXPIRED", "DEPOSIT_SUBMIT_FAILED", "API_KEY_MISSING", "API_KEY_INVALID", "API_KEY_DISABLED", "API_KEY_SCOPE_FORBIDDEN", "API_KEY_ORIGIN_FORBIDDEN"` — Machine-readable router error code
+
+- **`context`**
+
+  `object` — Caller-safe details about the failure
+
+- **`details`**
+
+  `array` — Per-venue failures for aggregated quote errors
+
+  **Items:**
+
+  - **`error` (required)**
+
+    `object`
+
+    - **`kind` (required)**
+
+      `string` — Failure category, e.g. http\_4xx, timeout, parse, unsupported, no\_liquidity, exception
+
+    - **`message` (required)**
+
+      `string` — Scrubbed failure message, or the skip / no-liquidity text for unsupported and no\_liquidity
+
+    - **`code`**
+
+      `string`, possible values: `"NO_QUOTES", "TRADE_NOTIONAL_BELOW_MINIMUM", "TRADE_BELOW_MINIMUM_FEE", "GAS_COST_ESTIMATE_REQUIRED", "SERVICE_UNAVAILABLE", "FEE_CONFIG_ERROR", "FEE_EXECUTOR_UNCONFIGURED", "TOTAL_FEE_BPS_EXCEEDS_MAX", "BUILDER_FEE_REQUIRES_API_KEY", "BUILDER_FEE_EXCEEDS_MAX", "NATIVE_ROUTE_UNAVAILABLE", "INTERNAL_ERROR"` — Allowlisted Arcus aggregator error code, when available
+
+    - **`status`**
+
+      `integer` — Upstream HTTP status, when applicable
+
+  - **`venue` (required)**
+
+    `string`, possible values: `"zerox", "bebop", "arcus", "rialto", "lifi"` — Liquidity venue. The set enabled for this deployment is reported by GET /health.
+
+**Example:**
+
+```json
+{
+  "code": "NO_QUOTES",
+  "context": {},
+  "details": [
+    {
+      "venue": "zerox",
+      "error": {
+        "kind": "",
+        "status": -9007199254740991,
+        "code": "NO_QUOTES",
+        "message": ""
+      }
+    }
+  ]
+}
+```

@@ -1,0 +1,20 @@
+{
+  "api_url": "https://api.arcus.xyz",
+  "ws_url": "wss://api.arcus.xyz/v1/ws",
+  "market": "BTC-USD",
+  "strategy": "mid",
+  "spread_bps": "2",
+  "bias_bps": "0",
+  "order_equity_fraction": "0.1",
+  "max_position_equity_fraction": "0.5",
+  "stop_loss_equity_fraction": "0.02",
+  "leverage_cap": 3,
+  "paper": true,
+  "paper_equity": "100",
+  "disconnect_seconds": 10,
+  "max_clock_skew_ms": 5000,
+  "max_order_failures": 3,
+  "clock_samples": 3,
+  "clock_max_rtt_ms": 1000,
+  "reprice_bps": "0.5"
+}

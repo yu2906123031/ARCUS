@@ -1,0 +1,124 @@
+# Arcus Docs
+
+- [Trade over REST](https://docs.arcus.xyz/guides/rest-trading.md): Register a key and place your first order over REST — the simplest way to get started
+- [Trade over WebSocket](https://docs.arcus.xyz/guides/websocket-trading.md): Register a key and place your first order over WebSocket — the primary trading interface
+- [Optimize for latency](https://docs.arcus.xyz/guides/latency.md): Where end-to-end latency comes from and how to minimize it — connectivity, host sizing, and the order-entry fast paths
+- [Fund a testnet account](https://docs.arcus.xyz/guides/fund-testnet-account.md): Deposit collateral on-chain when the Testnet Deposit button is not enough — for API traders who need a larger or programmatic balance
+- [Arcus MCP server](https://docs.arcus.xyz/ai-tools/mcp.md): Connect your AI assistant to the Arcus docs over the Model Context Protocol
+- [Claude Code](https://docs.arcus.xyz/ai-tools/claude-code.md): Add the Arcus MCP server to Claude Code
+- [Cursor](https://docs.arcus.xyz/ai-tools/cursor.md): Add the Arcus MCP server to Cursor
+- [Windsurf](https://docs.arcus.xyz/ai-tools/windsurf.md): Add the Arcus MCP server to Windsurf
+- [Perpetuals overview](https://docs.arcus.xyz/concepts/perpetuals/overview.md): What perpetual futures are on Arcus, the asset classes they cover, and how 24/7 trading works across crypto and real-world assets
+- [Architecture](https://docs.arcus.xyz/concepts/exchange-architecture.md): How the Arcus perpetuals exchange combines a high-performance off-chain matching engine with a permissioned appchain and an EVM rootchain to settle trades non-custodially
+- [Margin & leverage](https://docs.arcus.xyz/concepts/perpetuals/margin.md): How initial and maintenance margin work on Arcus perps, leverage limits, and the higher initial-margin regime when an underlying market is closed
+- [Cross & isolated margin](https://docs.arcus.xyz/concepts/perpetuals/margin-modes.md): The two margin modes on Arcus perps — how cross and isolated margin measure risk differently, how to switch modes, and how to move collateral onto and off an isolated position
+- [Liquidations](https://docs.arcus.xyz/concepts/perpetuals/liquidations.md): A high-level look at when an Arcus perp position is liquidated, what happens to it, and how off-hours price bands reduce cascade risk
+- [Prices](https://docs.arcus.xyz/concepts/perpetuals/prices.md): The prices an Arcus perp market tracks — the mark price that drives all risk, the oracle price that anchors it, and the order-book inputs that feed it
+- [Funding](https://docs.arcus.xyz/concepts/perpetuals/funding.md): How funding payments keep Arcus perps anchored to the underlying, how real-world-asset events are handled, and the off-hours funding and price-band regime
+- [Real-world asset perps](https://docs.arcus.xyz/concepts/perpetuals/real-world-assets.md): How Arcus perps on equities, commodities, and indices give 24/7 leveraged exposure that tracks the total return of the underlying — including dividends, splits, and futures rolls
+- [Order types](https://docs.arcus.xyz/concepts/perpetuals/order-types.md): Order types, time-in-force options, and take-profit / stop-loss on Arcus perps, at a conceptual level
+- [Fees](https://docs.arcus.xyz/concepts/perpetuals/fees.md): How trading fees work on Arcus — the maker/taker fee-tier model and where to read live fee values
+- [Stock Tokens](https://docs.arcus.xyz/concepts/spot-overview.md): What Stock Tokens are on Arcus — self-custodied, on-chain tokenized equities traded spot with zero fees, 24/7, and how spot differs from perps
+- [Spot Router](https://docs.arcus.xyz/concepts/spot-router.md): How the Arcus Spot Router aggregates on-chain AMM and RFQ liquidity behind one integration, routes each spot trade to the best execution, and settles on-chain, gasless in most cases.
+- [Spot integration](https://docs.arcus.xyz/concepts/spot-integration.md): What it takes to integrate the Arcus Spot Router — embedding Stock Token trading in a wallet or app, joining the RFQ maker network, builder-code economics, and answers to common integrator questions.
+- [Spot RFQ](https://docs.arcus.xyz/concepts/spot-rfq.md): How Arcus prices and settles spot trades through a request-for-quote flow with off-chain makers and atomic on-chain settlement
+- [Wrapped tokens](https://docs.arcus.xyz/concepts/wrapped-tokens.md): How Arcus Spot RFQ represents stock tokens as upgradeable wrapped tokens that are minted as a fallback when no native fill is available, held in your account until the maker settles them, and settled by makers
+- [Onboarding & deposits](https://docs.arcus.xyz/concepts/onboarding.md): What you need to start trading on Arcus, how deposits work through the Fun flow, and how funds settle as USDG
+- [Subaccounts](https://docs.arcus.xyz/concepts/subaccounts.md): How Arcus subaccounts work — the (wallet address, accountIndex) model, up to 10 isolated silos per wallet, API-key scoping, and same-wallet internal transfers
+- [Disclaimer and Terms](https://docs.arcus.xyz/concepts/disclaimer.md): Important information about the Arcus protocol, Stock Tokens, and the risks of trading.
+- [Introduction](https://docs.arcus.xyz/api-reference/introduction.md): REST and WebSocket APIs for Arcus
+- [Authentication](https://docs.arcus.xyz/api-reference/authentication.md): Ed25519 API keys and request signing
+- [WebSocket](https://docs.arcus.xyz/api-reference/websocket.md): Real-time market data and order routing
+- [Rate limits](https://docs.arcus.xyz/api-reference/rate-limits.md): How requests are weighted and throttled across REST, WebSocket, and the trading path
+- [Service info](https://docs.arcus.xyz/api-reference/public/service-info.md): Returns service metadata and the list of available endpoints. Use `GET /health` for a liveness/readiness check.
+- [Health check](https://docs.arcus.xyz/api-reference/public/health-check.md)
+- [Get L2 orderbook snapshot](https://docs.arcus.xyz/api-reference/public/get-l2-orderbook-snapshot.md): Returns the current L2 orderbook snapshot for a market, truncated to the requested number of levels per side.
+- [Get Best Bid Offer (BBO)](https://docs.arcus.xyz/api-reference/public/get-best-bid-offer-bbo.md): Returns the best bid and best ask for a market, derived from the orderbook snapshot. Returns null for bestBid/bestAsk when no data is available.
+- [Get current server time](https://docs.arcus.xyz/api-reference/public/get-current-server-time.md): Returns the current server wall-clock time as Unix nanoseconds. Rate-limited to 1 token per call.
+- [Get all mid prices](https://docs.arcus.xyz/api-reference/public/get-all-mid-prices.md): Returns precomputed mids for every market. Markets with no bid, no ask, or no top-of-book return an empty string for that key.
+- [Get live prices for all markets](https://docs.arcus.xyz/api-reference/public/get-live-prices-for-all-markets.md): Returns the latest oracle / mark price and per-market sequence number for every configured market, keyed by numeric `marketId` (as a string).
+- [Get fee tier table](https://docs.arcus.xyz/api-reference/public/get-fee-tier-table.md): Returns the complete exchange-wide fee tier table, sorted ascending by level.
+- [Get referral commission rate schedule](https://docs.arcus.xyz/api-reference/public/get-referral-commission-rate-schedule.md): Returns the referral commission rate schedule used by the referral service to compute affiliate payouts on each fill.
+- [Get markets](https://docs.arcus.xyz/api-reference/public/get-markets.md): Returns all markets with details, sorted by ascending `marketId`. Optionally filter to a single market.
+- [Get recent public trades](https://docs.arcus.xyz/api-reference/public/get-recent-public-trades.md): Returns recent public trades for a market, newest-first. One row per maker/taker pairing — a market sweep that hit 3 makers produces 3 rows. Same shape as the `trades` WebSocket channel. No authentication header is required.
+- [Get a single trade by ID](https://docs.arcus.xyz/api-reference/public/get-a-single-trade-by-id.md): Returns one trade row. The `market` query parameter is required: `trades_by_market` is partitioned by `market_id` first, so without it the lookup would scan every market's parts.
+- [Get OHLCV candles](https://docs.arcus.xyz/api-reference/public/get-ohlcv-candles.md): Returns OHLCV candlestick bars for a market and timeframe.
+- [Get open orders](https://docs.arcus.xyz/api-reference/public/get-open-orders.md): Returns the open orders for the requested account address, newest-first by placement time (`createdAt`).
+- [Get order history](https://docs.arcus.xyz/api-reference/public/get-order-history.md): Returns the order history (open, filled, canceled, rejected) for the requested account address, newest-first by event time. Optional `from`/`to` (epoch **microseconds**, the unit of the `updatedAt` field in the response) bound the time window for follow-on pagination. Optional `market`, `side`, and…
+- [Get fills](https://docs.arcus.xyz/api-reference/public/get-fills.md): Returns fill and trade history for the requested account address, newest-first. Optional `from`/`to` (epoch **microseconds**, the unit of the `createdAt` field in the response) bound the time window. Optional `accountIndex` selects a subaccount (default 0); optional `market` restricts results to a s…
+- [Get fill by ID](https://docs.arcus.xyz/api-reference/public/get-fill-by-id.md): Returns the single fill belonging to the requested account for the given trade ID. Requires the `address` query parameter (optional `accountIndex` selects a subaccount, default 0): fill data is partitioned by account, so the lookup needs the owning account. A trade can produce one fill per participa…
+- [Get account transfer updates](https://docs.arcus.xyz/api-reference/public/get-account-transfer-updates.md): Returns deposits, withdrawals, and transfers for the requesting account, newest-first.
+- [Get funding payments](https://docs.arcus.xyz/api-reference/public/get-funding-payments.md): Returns funding payment history for the requested account address, newest-first, optionally restricted to a single market via `market`. Optional `from`/`to` (epoch **microseconds**, the unit of the `time` field in the response) bound the time window. When `to` is omitted it defaults to now; when `fr…
+- [Get market funding rates](https://docs.arcus.xyz/api-reference/public/get-market-funding-rates.md): Returns historical funding rates for a market, newest-first. Optional `from`/`to` (epoch **microseconds**, the unit of the `time` field in the response) bound the time window. No authentication header is required.
+- [Get portfolio history](https://docs.arcus.xyz/api-reference/public/get-portfolio-history.md): Returns bundled account-equity and PnL time series for the requested address across preset ranges (24h, 7d, 30d, all-time) and per product (total/perp).
+- [Get current rate-limit usage](https://docs.arcus.xyz/api-reference/public/get-current-rate-limit-usage.md): Returns the rate-limit state of both per-subaccount pools (order and cancel) so callers can self-pace and inspect which throttle is constraining them.
+- [Get positions](https://docs.arcus.xyz/api-reference/public/get-positions.md): Returns all open positions for the requested account address. No authentication header is required.
+- [Get account](https://docs.arcus.xyz/api-reference/public/get-account.md): Returns account information for the requested address, including balances, collateral, and open positions. No authentication header is required.
+- [Get account stats](https://docs.arcus.xyz/api-reference/public/get-account-stats.md): Returns trading statistics for any Ethereum address, in selectable sections so clients fetch only what they need:
+- [Get order status](https://docs.arcus.xyz/api-reference/public/get-order-status.md): Returns the status of a specific order by order ID. Requires `address` query parameter for the owning account because order data is partitioned by account, so the lookup needs the owning account.
+- [Get leverage and margin mode for an account across all markets](https://docs.arcus.xyz/api-reference/public/get-leverage-and-margin-mode-for-an-account-across-all-markets.md): Returns the effective leverage and margin mode (CROSS/ISOLATED) for `(address, accountIndex)` across every market, sorted by ascending `marketId`. Each entry reflects the user's leverage override (set via `POST /v1/setLeverage`) when one exists, otherwise the market default, and the current margin m…
+- [Get the all-traders leaderboard](https://docs.arcus.xyz/api-reference/public/get-the-all-traders-leaderboard.md): Returns the top-N traders ranked by `sortBy` (`volume`, `pnl`, or `fees`; default `volume`) over the requested rolling window (`all`, `30d`, or `24h`; default `30d`).
+- [Place order](https://docs.arcus.xyz/api-reference/exchange/place-order.md): Place a single order.
+- [Place batch orders](https://docs.arcus.xyz/api-reference/exchange/place-batch-orders.md): Place up to 100 orders in a single request.
+- [Cancel order](https://docs.arcus.xyz/api-reference/exchange/cancel-order.md): Cancel an open order by ID.
+- [Batch cancel orders](https://docs.arcus.xyz/api-reference/exchange/batch-cancel-orders.md): Cancel up to 100 orders in a single request.
+- [Schedule cancel-all (dead man's switch)](https://docs.arcus.xyz/api-reference/exchange/schedule-cancel-all-dead-mans-switch.md): Arm, refresh, or disarm a per-subaccount dead man's switch.
+- [Cancel all open orders](https://docs.arcus.xyz/api-reference/exchange/cancel-all-open-orders.md): Cancel every open order for `(address, accountIndex)`.
+- [Modify order](https://docs.arcus.xyz/api-reference/exchange/modify-order.md): Modify the price and/or quantity of an open order.
+- [Batch modify orders](https://docs.arcus.xyz/api-reference/exchange/batch-modify-orders.md): Modify up to 100 open orders in a single request.
+- [Set leverage for a market](https://docs.arcus.xyz/api-reference/exchange/set-leverage-for-a-market.md): Set per-(account, market) leverage.
+- [Add or remove margin on an isolated-mode position](https://docs.arcus.xyz/api-reference/exchange/add-or-remove-margin-on-an-isolated-mode-position.md): Move margin between the cross bucket and an isolated-mode position's leg.
+- [Submit withdrawal](https://docs.arcus.xyz/api-reference/exchange/submit-withdrawal.md): Submit a withdrawal of collateral to the chain.
+- [Submit internal transfer](https://docs.arcus.xyz/api-reference/exchange/submit-internal-transfer.md): Move collateral between two account indexes of the **same wallet**.
+- [Get API keys](https://docs.arcus.xyz/api-reference/onboarding/get-api-keys.md): Returns all API keys associated with the given Ethereum address.
+- [Create API key](https://docs.arcus.xyz/api-reference/onboarding/create-api-key.md): Create an API key for the ethereum address.
+- [Revoke API key](https://docs.arcus.xyz/api-reference/onboarding/revoke-api-key.md): Revoke (remove) an existing API key.
+- [Create referral code](https://docs.arcus.xyz/api-reference/referral/create-referral-code.md): Creates a new referral code for the authenticated affiliate. Requires Ed25519 signature. The `address` in the body must match the API key's master Ethereum address.
+- [Register as referee](https://docs.arcus.xyz/api-reference/referral/register-as-referee.md): Binds the authenticated user to a referral code, registering them as a referee of the code's owner. When the registration volume gate is enabled, the referee's rolling 30-day volume must be strictly below $1M.
+- [Update kickback rate](https://docs.arcus.xyz/api-reference/referral/update-kickback-rate.md): Updates the kickback rate (BPS) for the authenticated affiliate's referral code.
+- [Revoke referral code](https://docs.arcus.xyz/api-reference/referral/revoke-referral-code.md): Revokes the authenticated affiliate's referral code. Existing bindings remain but no new referees can register.
+- [Rename referral code](https://docs.arcus.xyz/api-reference/referral/rename-referral-code.md): Renames the authenticated affiliate's referral code to a new string in place.
+- [Claim accrued commission](https://docs.arcus.xyz/api-reference/referral/claim-accrued-commission.md): Submits a claim for accrued affiliate commission.
+- [Get affiliate info](https://docs.arcus.xyz/api-reference/referral/get-affiliate-info.md): Returns the caller's own affiliate information including code, tier, commission totals, and referee count.
+- [Get the caller's referral code](https://docs.arcus.xyz/api-reference/referral/get-the-callers-referral-code.md): Lightweight code-only read: returns `{ address, code, isAffiliate }` from a single database point read — none of the volume, commission, or fee-tier enrichment that `GET /v1/affiliate/info` performs.
+- [Get referees](https://docs.arcus.xyz/api-reference/referral/get-referees.md): Returns the caller's own T1/T2/T3 referee list, newest-first by each referee row's own `boundAt`.
+- [Get my referrer](https://docs.arcus.xyz/api-reference/referral/get-my-referrer.md): Returns the referral binding for the given address, if any — the `code` it was bound under and the `discountBps` it earns.
+- [Get affiliate leaderboard](https://docs.arcus.xyz/api-reference/referral/get-affiliate-leaderboard.md): Returns the top-N affiliates by lifetime commission, all-time. The result is cached 60s. Cardinality is bounded by the affiliate count, not the commission count.
+- [Get affiliate commission history](https://docs.arcus.xyz/api-reference/referral/get-affiliate-commission-history.md): Returns one page of the caller's own per-fill commission events, ordered by `fillId DESC, tier ASC, referee ASC`.
+- [Get affiliate claim history](https://docs.arcus.xyz/api-reference/referral/get-affiliate-claim-history.md): Returns one page of an affiliate's claim history, newest-first by `timestampMs`. Optional `from`/`to` (epoch ms) bound the time window for follow-on pagination.
+- [Look up a single claim](https://docs.arcus.xyz/api-reference/referral/look-up-a-single-claim.md): Returns a single claim row identified by `(address, id)`. Both parameters are required — claims are partitioned by affiliate in the datastore, so a global `id`-only lookup is not supported.
+- [Check whether a referral code is available](https://docs.arcus.xyz/api-reference/referral/check-whether-a-referral-code-is-available.md): Returns `{ code, available }` for a single referral code string.
+- [List the caller's invite codes](https://docs.arcus.xyz/api-reference/referral/list-the-callers-invite-codes.md): Returns the caller's earned invite codes with redemption status.
+- [Redeem an invite code](https://docs.arcus.xyz/api-reference/referral/redeem-an-invite-code.md): Redeems a single-use invite code.
+- [L2 orderbook](https://docs.arcus.xyz/api-reference/market-data/l2orderbook.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [L2 orderbook updates](https://docs.arcus.xyz/api-reference/market-data/l2orderbookupdates.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Trades](https://docs.arcus.xyz/api-reference/market-data/trades.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Markets](https://docs.arcus.xyz/api-reference/market-data/markets.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Oracle prices](https://docs.arcus.xyz/api-reference/market-data/oracleprices.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Bbo](https://docs.arcus.xyz/api-reference/market-data/bbo.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Predicted funding](https://docs.arcus.xyz/api-reference/market-data/predictedfunding.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Exchange attribute updates](https://docs.arcus.xyz/api-reference/market-data/exchangeattributeupdates.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Market attributes](https://docs.arcus.xyz/api-reference/market-data/marketattributes.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Candles](https://docs.arcus.xyz/api-reference/market-data/candles.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Account](https://docs.arcus.xyz/api-reference/account/account.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Positions](https://docs.arcus.xyz/api-reference/account/positions.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [User fills](https://docs.arcus.xyz/api-reference/account/userfills.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Orders](https://docs.arcus.xyz/api-reference/account/orders.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Funding](https://docs.arcus.xyz/api-reference/account/funding.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Account transfer updates](https://docs.arcus.xyz/api-reference/account/accounttransferupdates.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Account attribute updates](https://docs.arcus.xyz/api-reference/account/accountattributeupdates.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Order operations](https://docs.arcus.xyz/api-reference/trading/orderoperations.md): > **Endpoint:** `wss://api.arcus.xyz/v1/ws` — one socket multiplexes every channel and RPC request. Click **Connect**, then send the example subscribe message below to start receiving data.
+- [Changelog API (Mainnet)](https://docs.arcus.xyz/changelog.md): Release notes for the Arcus production API
+- [Changelog API (Testnet)](https://docs.arcus.xyz/changelog/testnet.md): API and WebSocket spec changes, anchored to testnet releases
+- [Changelog FE](https://docs.arcus.xyz/changelog/frontend.md): Release notes for the Arcus trading app
+
+## OpenAPI Specs
+
+- [openapi](/api-reference/openapi.yml)
+
+## AsyncAPI Specs
+
+- [asyncapi](/api-reference/asyncapi.yaml)
+
+
+This documentation is built and hosted on [Mintlify](https://mintlify.com), a developer documentation platform.
