@@ -247,6 +247,12 @@ class Live:
         self.arm_time=0.0
         self.free_collateral=D(0)
         self.resume_info=None
+        self.checkpoint_dir=None
+        self.checkpoint_trade_id=None
+        self.checkpoint_boundary_seq=-1
+        self.checkpoint_base=None
+        self.checkpoint_recent={}
+        self.has_checkpoint=False
         self.leverage_confirmed=False
         self.leverage_denial_pending=False
         self.protection_cooldown=0.0
@@ -402,6 +408,28 @@ class Live:
         orders=(await self.api.get("/v1/openOrders",self.scope()))["orders"]
         if orders and not (allow_cancel and auto_resume_dir is not None): raise ExchangeError("startup requires no open orders")
         resume_path=None
+        checkpoint=None
+        if auto_resume_dir is not None:
+            from .recovery import load_checkpoint,Resume
+            self.checkpoint_dir=auto_resume_dir
+            checkpoint=load_checkpoint(auto_resume_dir,self.c.market,self.signer.account_index)
+            if checkpoint is not None:
+                self.has_checkpoint=True
+                for name in ("initial","qty","entry","realized","fees","volume","maker_volume"):
+                    setattr(self.ledger,name,number(getattr(checkpoint,name)))
+                self.last_fill_seq=checkpoint.sequence_number
+                self.checkpoint_boundary_seq=checkpoint.sequence_number
+                self.last_fill_time=checkpoint.created_at
+                self.checkpoint_trade_id=checkpoint.trade_id
+                self.checkpoint_recent={trade_id:(created_at,sequence) for trade_id,created_at,sequence in checkpoint.recent_fills}
+                self.started_us=max(0,checkpoint.created_at-6000000)
+                self.fill_cursor=self.started_us
+                resume=Resume(self.started_us,checkpoint.initial,self.c.market,self.signer.account_index)
+                self.log("checkpoint_selected",trade_id=checkpoint.trade_id,created_at=checkpoint.created_at,
+                         sequence_number=checkpoint.sequence_number)
+        if orders and auto_resume_dir is not None:
+            from .recovery import latest_resume
+            resume_path,_=latest_resume(auto_resume_dir,self.c.market,self.signer.account_index)
         if resume is None and auto_resume_dir is not None and (orders or any(number(p["size"]) for p in a["positions"].values())):
             from .recovery import latest_resume
             path,resume=latest_resume(auto_resume_dir,self.c.market,self.signer.account_index)
@@ -433,6 +461,7 @@ class Live:
             self.ledger.initial=number(resume.initial_equity)
             if self.c.capital_cap is not None and self.ledger.initial>D(self.c.capital_cap):
                 raise ExchangeError("resume capital exceeds configured cap")
+        self.checkpoint_base=dict(self.ledger.__dict__)
         synced=await self.reconcile()
         if not synced or self.fatal: raise ExchangeError("startup account/fills did not reconcile")
         self.log("preflight",equity=self.equity,initial_equity=self.ledger.initial,
@@ -530,13 +559,39 @@ class Live:
         self.log("protection_disarmed",orders_confirmed_clear=True)
         return True
 
+    async def fills_since(self,from_us):
+        """Fetch the complete inclusive fill window, paging newest-first by timestamp."""
+        rows=[]
+        seen=set()
+        to_us=None
+        while True:
+            params=dict(self.scope(),market=self.c.market,limit=1000,**{"from":from_us})
+            if to_us is not None: params["to"]=to_us
+            page=(await self.api.get("/v1/fills",params))["fills"]
+            for row in page:
+                trade_id=str(row["tradeId"])
+                if trade_id not in seen:
+                    seen.add(trade_id);rows.append(row)
+            if len(rows)>20000: raise ExchangeError("fill catch-up safety bound reached")
+            if len(page)<1000: return rows
+            oldest=min(int(row["createdAt"]) for row in page)
+            if to_us is not None and oldest>=to_us:
+                raise ExchangeError("fill catch-up pagination did not advance")
+            to_us=oldest
+
     async def reconcile(self):
         a=await self.api.get("/v1/account",self.scope())
-        rows=(await self.api.get("/v1/fills",dict(self.scope(),market=self.c.market,limit=1000,**{"from":self.fill_cursor})))["fills"]
-        if len(rows)>=1000:
-            self.fatal="fill catch-up window overflow; cannot prove complete ledger"
-        for row in sorted(rows,key=lambda f:(int(f["createdAt"]),str(f["tradeId"]))): self.apply_fill(row)
-        if rows: self.fill_cursor=max(self.started_us,max(int(f["createdAt"]) for f in rows)-30000000)
+        rows=await self.fills_since(self.fill_cursor)
+        ordered=sorted(rows,key=lambda f:(int(f["createdAt"]),int(f.get("sequenceNumber",-1)),str(f["tradeId"])))
+        if self.has_checkpoint:
+            unknown_old=[f for f in ordered if int(f.get("sequenceNumber",-1))>=0
+                         and int(f["sequenceNumber"])<=self.checkpoint_boundary_seq
+                         and str(f["tradeId"]) not in self.checkpoint_recent]
+            if unknown_old:
+                self.fatal="unknown fill at or below checkpoint sequence"
+        if self.fatal: return False
+        for row in ordered:
+            self.apply_fill(row)
         seq=int(a["sequenceNumber"])
         if seq<self.last_account_seq: raise ExchangeError("account sequence regressed")
         self.last_account_seq=seq
@@ -548,7 +603,30 @@ class Live:
         self.free_collateral=number(a["freeCollateral"])
         self.account_time=time.monotonic()
         # Fill ledger and authoritative snapshot must converge before new quotes.
-        return self.account_qty==self.ledger.qty and seq>=self.last_fill_seq
+        synced=self.account_qty==self.ledger.qty and seq>=self.last_fill_seq
+        if synced and self.checkpoint_dir is not None and self.fill_journal:
+            newest=max(self.fill_journal.values(),key=lambda f:(int(f["createdAt"]),int(f.get("sequenceNumber",-1)),str(f["tradeId"])))
+            from .recovery import save_checkpoint
+            cutoff=int(newest["createdAt"])-6000000
+            recent=[dict(trade_id=trade_id,created_at=created_at,sequence_number=sequence)
+                    for trade_id,(created_at,sequence) in self.checkpoint_recent.items() if created_at>=cutoff]
+            recent.extend(dict(trade_id=str(f["tradeId"]),created_at=int(f["createdAt"]),
+                               sequence_number=int(f.get("sequenceNumber",-1)))
+                          for f in self.fill_journal.values() if int(f["createdAt"])>=cutoff)
+            newest_fill_seq=int(newest.get("sequenceNumber",-1))
+            confirmed_fill_seq=max(self.checkpoint_boundary_seq,newest_fill_seq)
+            save_checkpoint(self.checkpoint_dir,self.c.market,self.signer.account_index,self.ledger,
+                            trade_id=newest["tradeId"],created_at=int(newest["createdAt"]),
+                            sequence_number=confirmed_fill_seq,recent_fills=recent)
+            self.checkpoint_trade_id=str(newest["tradeId"])
+            self.checkpoint_boundary_seq=confirmed_fill_seq
+            self.checkpoint_recent={row["trade_id"]:(row["created_at"],row["sequence_number"]) for row in recent}
+            self.has_checkpoint=True
+            self.started_us=max(0,int(newest["createdAt"])-6000000)
+            self.fill_cursor=self.started_us
+            self.checkpoint_base=dict(self.ledger.__dict__)
+            self.fill_journal.clear()
+        return synced
 
     def event(self,msg):
         data=msg["contents"]
@@ -565,18 +643,22 @@ class Live:
             for row in rows: self.update_order(row)
 
     def apply_fill(self,f):
-        key=(str(f["tradeId"]),str(f["orderId"]),f["side"])
+        key=str(f["tradeId"])
         stamp=int(f["createdAt"])
-        if key in self.seen or stamp<self.started_us: return
+        sequence=int(f.get("sequenceNumber",-1))
+        if key in self.seen or key in self.checkpoint_recent or stamp<self.started_us: return
+        if self.has_checkpoint and sequence>=0 and sequence<=self.checkpoint_boundary_seq:
+            self.fatal="unknown fill at or below checkpoint sequence"
+            return
         self.seen.add(key); self.fill_journal[key]=f
         if len(self.seen)>100000: self.fatal="fill deduplication bound reached"
-        self.last_fill_seq=max(self.last_fill_seq,int(f.get("sequenceNumber",-1)))
+        self.last_fill_seq=max(self.last_fill_seq,sequence)
         if stamp<self.last_fill_time:
-            # REST catches delayed fills; rebuild cost basis in event order.
-            capital=self.ledger.initial
+            # Rebuild the post-checkpoint delta in exchange sequence order.
             from .models import Ledger
-            rebuilt=Ledger(capital)
-            for x in sorted(self.fill_journal.values(),key=lambda x:(int(x["createdAt"]),int(x.get("sequenceNumber",0)),str(x["tradeId"]))):
+            rebuilt=Ledger(self.ledger.initial)
+            if self.checkpoint_base is not None: rebuilt.__dict__.update(self.checkpoint_base)
+            for x in sorted(self.fill_journal.values(),key=lambda x:(int(x.get("sequenceNumber",-1)),int(x["createdAt"]),str(x["tradeId"]))):
                 rebuilt.fill(x["side"],x["size"],x["price"],x["fee"],x["role"]=="MAKER")
             self.ledger.__dict__.update(rebuilt.__dict__)
         else:

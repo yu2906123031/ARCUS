@@ -1,5 +1,6 @@
 """Load replay bounds from an explicitly selected prior live-session log."""
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,80 @@ class Resume:
     initial_equity: str
     market: str
     account_index: int
+
+@dataclass(frozen=True)
+class Checkpoint:
+    trade_id: str
+    created_at: int
+    sequence_number: int
+    initial: str
+    qty: str
+    entry: str
+    realized: str
+    fees: str
+    volume: str
+    maker_volume: str
+    market: str
+    account_index: int
+    recent_fills: tuple
+
+
+def checkpoint_path(directory,market,account_index):
+    safe=market.replace("/","-").replace("\\","-")
+    return Path(directory)/(f"checkpoint-{safe}-{int(account_index)}.json")
+
+
+def save_checkpoint(directory,market,account_index,ledger,trade_id,created_at,sequence_number,recent_fills=()):
+    """Atomically persist the compact accounting state and newest processed fill."""
+    root=Path(directory);root.mkdir(parents=True,exist_ok=True)
+    path=checkpoint_path(root,market,account_index)
+    compact=[];seen=set()
+    for row in recent_fills:
+        item=dict(trade_id=str(row["trade_id"]),created_at=int(row["created_at"]),
+                  sequence_number=int(row.get("sequence_number",-1)))
+        if item["trade_id"] not in seen:
+            seen.add(item["trade_id"]);compact.append(item)
+    if str(trade_id) not in seen:
+        compact.append(dict(trade_id=str(trade_id),created_at=int(created_at),sequence_number=int(sequence_number)))
+    payload=dict(version=2,market=market,account_index=int(account_index),trade_id=str(trade_id),
+                 created_at=int(created_at),sequence_number=int(sequence_number),recent_fills=compact,
+                 ledger={name:str(getattr(ledger,name)) for name in
+                         ("initial","qty","entry","realized","fees","volume","maker_volume")})
+    temp=path.with_name(path.name+f".{os.getpid()}.tmp")
+    with temp.open("w",encoding="utf-8") as target:
+        json.dump(payload,target,separators=(",",":"),sort_keys=True)
+        target.flush();os.fsync(target.fileno())
+    os.chmod(temp,0o600);os.replace(temp,path)
+    directory_fd=os.open(root,os.O_RDONLY)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+    return path
+
+
+def load_checkpoint(directory,market,account_index):
+    path=checkpoint_path(directory,market,account_index)
+    if not path.exists(): return None
+    raw=json.loads(path.read_text(encoding="utf-8"))
+    if raw.get("version") not in (1,2) or raw.get("market")!=market or int(raw.get("account_index",-1))!=int(account_index):
+        raise ValueError("checkpoint market/subaccount mismatch")
+    ledger=raw.get("ledger",{})
+    names=("initial","qty","entry","realized","fees","volume","maker_volume")
+    values={name:str(ledger[name]) for name in names}
+    parsed={name:number(value) for name,value in values.items()}
+    if any(not value.is_finite() for value in parsed.values()) or parsed["initial"]<=0:
+        raise ValueError("invalid checkpoint ledger")
+    created_at=int(raw["created_at"]);sequence=int(raw["sequence_number"])
+    trade_id=str(raw["trade_id"])
+    if created_at<0 or sequence<0 or not trade_id: raise ValueError("invalid checkpoint cursor")
+    recent=[]
+    fallback=[{"trade_id":trade_id,"created_at":created_at,"sequence_number":sequence}]
+    for row in raw.get("recent_fills",fallback):
+        item=(str(row["trade_id"]),int(row["created_at"]),int(row.get("sequence_number",-1)))
+        if not item[0] or item[1]<0: raise ValueError("invalid checkpoint recent fill")
+        recent.append(item)
+    if len(recent)>20000: raise ValueError("checkpoint recent-fill bound reached")
+    return Checkpoint(trade_id=trade_id,created_at=created_at,sequence_number=sequence,
+                      market=market,account_index=int(account_index),recent_fills=tuple(recent),**values)
 
 def load_resume(path):
     preflight=session=None

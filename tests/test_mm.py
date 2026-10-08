@@ -83,6 +83,18 @@ class Strategy(unittest.TestCase):
             qs=targets(replace(Config(),strategy=strategy,order_equity_fraction="0.2"),market(),book(),D(100),D(0))
             self.assertEqual(len(qs),count)
             self.assertTrue(all(q.price<book().ask if q.side=="BUY" else q.price>book().bid for q in qs))
+    def test_absolute_order_notional_is_randomized_within_bounds(self):
+        c=replace(Config(),order_notional_min="20",order_notional_max="30",max_position_equity_fraction=".3")
+        with patch("arcus_mm.strategy.secrets.randbelow",side_effect=[0,1000]):
+            qs=targets(c,market(),book(),D(100),D(0))
+        notionals={q.side:q.qty*q.price for q in qs}
+        self.assertGreaterEqual(notionals["BUY"],D("19.99"))
+        self.assertLessEqual(notionals["BUY"],D("20"))
+        self.assertGreaterEqual(notionals["SELL"],D("29.99"))
+        self.assertLessEqual(notionals["SELL"],D("30"))
+    def test_order_notional_bounds_validate_together(self):
+        with self.assertRaises(ValueError):replace(Config(),order_notional_min="20").validate()
+        with self.assertRaises(ValueError):replace(Config(),order_notional_min="30",order_notional_max="20").validate()
     def test_only_reduce_when_over_cap(self):
         for pos,side in [(D("0.001"),"SELL"),(D("-0.001"),"BUY")]:
             qs=targets(replace(Config(),order_equity_fraction="0.2"),market(),book(),D(100),pos)

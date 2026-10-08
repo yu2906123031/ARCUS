@@ -1,0 +1,24 @@
+[Unit]
+Description=ARCUS BTC-USD live market maker
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ARCUS
+EnvironmentFile=/root/ARCUS/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/.hermes/hermes-agent/venv/bin/python3 -u -m arcus_mm run --config /root/ARCUS/mm_live_btc_100.json --live --auto-resume --auto-restart --seconds 0 --flatten-on-exit
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=45
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

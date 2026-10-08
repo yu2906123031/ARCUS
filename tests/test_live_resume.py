@@ -6,7 +6,7 @@ from pathlib import Path
 from decimal import Decimal as D
 from dataclasses import replace
 from unittest.mock import AsyncMock
-from arcus_mm.recovery import Resume,load_resume,latest_resume
+from arcus_mm.recovery import Resume,load_resume,latest_resume,save_checkpoint,load_checkpoint
 from arcus_mm.api import PublicAPI,Live,ExchangeError
 from arcus_mm.config import Config
 from arcus_mm.models import Ledger
@@ -35,6 +35,121 @@ class ResumePreflight(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.live.ledger.fees,D(".01"))
         self.assertEqual(self.live.ledger.volume,D(85))
         self.assertEqual(self.live.ledger.initial,D(100))
+
+    async def test_preflight_pages_through_more_than_one_thousand_fills(self):
+        fills=[]
+        for i in range(1001):
+            fills.append({**self.fill,"tradeId":str(i),"createdAt":2000000+i,"sequenceNumber":i+1,
+                          "side":"BUY" if i%2==0 else "SELL","size":".001"})
+        self.account["positions"]["1"]["size"]=".001"
+        self.account["sequenceNumber"]=2000
+        previous=self.api.get.side_effect
+        async def get(path,params=None):
+            if path!="/v1/fills": return await previous(path,params)
+            upper=int(params.get("to",10**30))
+            rows=[row for row in fills if row["createdAt"]>=params["from"] and row["createdAt"]<=upper]
+            return {"fills":list(reversed(rows))[:1000]}
+        self.api.get.side_effect=get
+        await self.live.preflight(self.resume)
+        self.assertEqual(self.live.ledger.qty,D(".001"))
+        fill_calls=[c for c in self.api.get.await_args_list if c.args[0]=="/v1/fills"]
+        self.assertEqual(len(fill_calls),2)
+        self.assertIn("to",fill_calls[1].args[1])
+
+    async def test_auto_resume_uses_checkpoint_and_fetches_only_incremental_fills(self):
+        with tempfile.TemporaryDirectory() as d:
+            save_checkpoint(d,"BTC-USD",0,self.live.ledger,
+                            trade_id="old",created_at=19000000,sequence_number=1)
+            self.fill.update(tradeId="new",createdAt=80000000,sequenceNumber=2)
+            await self.live.preflight(auto_resume_dir=d)
+            call=next(c for c in self.api.get.await_args_list if c.args[0]=="/v1/fills")
+            self.assertEqual(call.args[1]["from"],13000000)
+            self.assertEqual(self.live.ledger.qty,D("-.001"))
+            checkpoint=load_checkpoint(d,"BTC-USD",0)
+            self.assertEqual(checkpoint.trade_id,"new")
+            self.assertEqual(checkpoint.sequence_number,2)
+
+    async def test_checkpoint_overlap_does_not_reapply_old_trade(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.live.ledger.fill("BUY",".001","84000",".01",True)
+            save_checkpoint(d,"BTC-USD",0,self.live.ledger,
+                            trade_id="old",created_at=2000000,sequence_number=2)
+            self.fill.update(tradeId="old",side="BUY",price="84000",createdAt=2000000,sequenceNumber=2)
+            self.fill.pop("sequenceNumber")
+            self.account["positions"]["1"]["size"]=".001"
+            await self.live.preflight(auto_resume_dir=d)
+            self.assertEqual(self.live.ledger.qty,D(".001"))
+            self.assertEqual(self.live.ledger.fees,D(".01"))
+
+    async def test_same_timestamp_new_fills_are_all_applied_in_sequence_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            save_checkpoint(d,"BTC-USD",0,self.live.ledger,
+                            trade_id="old",created_at=19000000,sequence_number=10)
+            low={**self.fill,"tradeId":"z","createdAt":20000000,"side":"BUY","size":".001","sequenceNumber":11}
+            high={**self.fill,"tradeId":"a","createdAt":20000000,"side":"BUY","size":".001","sequenceNumber":12}
+            account={**self.account,"positions":{"1":{"size":".002"}},"sequenceNumber":12}
+            key=dict(apiKey=self.live.signer.public,status="ACTIVE",accountIndex=0,validUntil=0)
+            self.api.get=AsyncMock(side_effect=[{"apiKeys":[key]},account,{"orders":[]},account,{"fills":[high,low]}])
+            await self.live.preflight(auto_resume_dir=d)
+            self.assertEqual(self.live.ledger.qty,D(".002"))
+
+    async def test_delayed_increment_keeps_checkpointed_cost_basis(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.live.ledger.fill("BUY",".001","84000",".01",True)
+            save_checkpoint(d,"BTC-USD",0,self.live.ledger,
+                            trade_id="old",created_at=20000000,sequence_number=10)
+            delayed={**self.fill,"tradeId":"new","createdAt":19000001,"side":"SELL","size":".0005","sequenceNumber":11}
+            account={**self.account,"positions":{"1":{"size":".0005"}},"sequenceNumber":11}
+            key=dict(apiKey=self.live.signer.public,status="ACTIVE",accountIndex=0,validUntil=0)
+            self.api.get=AsyncMock(side_effect=[{"apiKeys":[key]},account,{"orders":[]},account,{"fills":[delayed]}])
+            await self.live.preflight(auto_resume_dir=d)
+            self.assertEqual(self.live.ledger.qty,D(".0005"))
+            self.assertEqual(self.live.ledger.entry,D("84000"))
+
+    async def test_global_sequence_gap_commits_only_after_rest_reconciliation(self):
+        with tempfile.TemporaryDirectory() as d:
+            base=Ledger(D("100"))
+            save_checkpoint(d,"BTC-USD",0,base,"old",19000000,10)
+            gap={**self.fill,"tradeId":"gap","createdAt":20000000,"side":"BUY","size":".001","sequenceNumber":12}
+            account={**self.account,"positions":{"1":{"size":".001"}},"sequenceNumber":12}
+            key=dict(apiKey=self.live.signer.public,status="ACTIVE",accountIndex=0,validUntil=0)
+            self.api.get=AsyncMock(side_effect=[{"apiKeys":[key]},account,{"orders":[]},account,{"fills":[gap]}])
+            await self.live.preflight(auto_resume_dir=d)
+            checkpoint=load_checkpoint(d,"BTC-USD",0)
+            self.assertEqual(checkpoint.trade_id,"gap")
+            self.assertEqual(checkpoint.sequence_number,12)
+
+    async def test_unknown_low_sequence_blocks_checkpoint_advance(self):
+        with tempfile.TemporaryDirectory() as d:
+            base=Ledger(D("100"))
+            save_checkpoint(d,"BTC-USD",0,base,"old",19000000,10)
+            unknown={**self.fill,"tradeId":"unknown","createdAt":19000001,"sequenceNumber":9}
+            account={**self.account,"sequenceNumber":10}
+            key=dict(apiKey=self.live.signer.public,status="ACTIVE",accountIndex=0,validUntil=0)
+            self.api.get=AsyncMock(side_effect=[{"apiKeys":[key]},account,{"orders":[]},account,{"fills":[unknown]}])
+            with self.assertRaises(ExchangeError):
+                await self.live.preflight(auto_resume_dir=d)
+            self.assertEqual(load_checkpoint(d,"BTC-USD",0).sequence_number,10)
+
+    async def test_websocket_fill_never_advances_checkpoint_before_rest_reconcile(self):
+        with tempfile.TemporaryDirectory() as d:
+            base=Ledger(D("100"))
+            save_checkpoint(d,"BTC-USD",0,base,"old",19000000,10)
+            self.live.checkpoint_dir=d
+            self.live.has_checkpoint=True
+            self.live.checkpoint_boundary_seq=10
+            self.live.checkpoint_recent={"old":(19000000,10)}
+            self.live.started_us=13000000
+            self.live.checkpoint_base=dict(base.__dict__)
+            late={**self.fill,"tradeId":"late","createdAt":20000000,"side":"BUY","size":".001","sequenceNumber":11}
+            self.live.apply_fill(late)
+            self.assertEqual(load_checkpoint(d,"BTC-USD",0).sequence_number,10)
+            account={**self.account,"positions":{"1":{"size":".001"}},"sequenceNumber":11}
+            persisted={k:v for k,v in late.items() if k!="sequenceNumber"}
+            self.api.get=AsyncMock(side_effect=[account,{"fills":[persisted]}])
+            self.assertTrue(await self.live.reconcile())
+            self.assertEqual(load_checkpoint(d,"BTC-USD",0).sequence_number,11)
+
     async def test_auto_resume_replays_existing_position(self):
         with tempfile.TemporaryDirectory() as d:
             write_session(Path(d)/"live-20261007-000001.jsonl",since=1000000)

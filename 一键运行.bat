@@ -38,9 +38,8 @@ echo Settings: mm_live_btc_100.json. Capital cap: USD 100. Leverage: 5x.
 echo Unclassified order denials: restart after verified cleanup. Default cooldown: 60s.
 echo Run time: until Ctrl+C. Logs: mm_logs/live-BTC-USD. Credentials: .env.
 echo Protection: software only. Server automatic cancel is disabled.
-echo Dashboard: http://127.0.0.1:8765
 echo Ctrl+C requests a stop and reduce-only flattening. Do not close this window.
-"%MM_PYTHON%" -u -m arcus_mm run --config mm_live_btc_100.json --live --auto-resume --auto-restart --dashboard --seconds 0 --flatten-on-exit
+"%MM_PYTHON%" -u -m arcus_mm run --config mm_live_btc_100.json --live --auto-resume --auto-restart --seconds 0 --flatten-on-exit
 set "MM_EXIT=%ERRORLEVEL%"
 goto finish
 :doctor

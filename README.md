@@ -183,9 +183,9 @@ Explicit live recovery uses `--resume-log <prior live JSONL>` together with `--l
 The one-click launcher enables `--auto-resume`. A flat account starts a new session. For an existing BTC position, startup selects the latest complete live log for the configured market/subaccount, replays fills and verifies the exact account position and sequence before trading. Cost basis, fees, volume and the original risk capital are preserved. Failed startup/doctor logs are skipped. Existing open orders, positions in other markets, missing logs, over 1000 fills or reconciliation mismatches still prevent startup. The read-only `--check` uses the same recovery checks without sending mutations. This option does not automatically restart a running or stopped process or remove runtime locks.
 
 
-## Detailed monitoring dashboard
+## Live monitoring
 
-The live launcher dashboard shows exchange equity separately from the bot risk equity, collateral, full-decimal BTC positions, risk budgets, worst-case directional order exposure, order IDs and reduce-only flags. Recent fills and key events are bounded in memory and limited to the current process; replayed fills may appear during position recovery. Risk budgets follow the trading engine formulas. The page marks data stale when status polling fails. Account/fill synchronization, subscription readiness and recovery origin are shown separately. Stop still requests the normal engine cleanup; verify the final account position to confirm flattening. New Python status fields require a normal process restart.
+The live launcher runs without a local HTTP dashboard. Runtime activity is written to the configured JSONL log directory. Use Ctrl-C in the launcher window to request normal cleanup and reduce-only flattening, then verify the final account position.
 
 
 ## Transient failure restart

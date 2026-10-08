@@ -1,6 +1,7 @@
 from decimal import Decimal as D
 from collections import deque
 from dataclasses import replace
+import secrets
 from .models import BPS, Quote
 from .features import EWMAVolatility
 
@@ -75,6 +76,16 @@ class QuotePolicy:
 
 
 
+def order_notional(c,equity):
+    if c.order_notional_min is None:return equity*D(c.order_equity_fraction)
+    assert c.order_notional_max is not None
+    low,high=D(c.order_notional_min),D(c.order_notional_max)
+    scale=D("0.01")
+    low_cents=int((low/scale).to_integral_value(rounding="ROUND_CEILING"))
+    high_cents=int((high/scale).to_integral_value(rounding="ROUND_FLOOR"))
+    return D(low_cents+secrets.randbelow(high_cents-low_cents+1))*scale
+
+
 def targets(c, market, book, equity, position, side_spreads=None):
     """Reserve each side's worst-case fills separately; never net open orders."""
     if equity <= 0: return []
@@ -98,7 +109,7 @@ def targets(c, market, book, equity, position, side_spreads=None):
             if px<=0 or (side=="BUY" and px>=book.ask) or (side=="SELL" and px<=book.bid) or (side,px) in used: continue
             budget = buy_budget if side=="BUY" else sell_budget
             if over: budget = min(budget,abs(position)-sum(q.qty for q in result))
-            qty = market.quantity(min(equity*D(c.order_equity_fraction)/px,budget))
+            qty = market.quantity(min(order_notional(c,equity)/px,budget))
             if qty<market.min_size or (not over and qty*px<market.min_notional): continue
             result.append(Quote(f"{side}-{level}",side,px,qty,over,half_spread)); used.add((side,px))
             if side=="BUY": buy_budget -= qty

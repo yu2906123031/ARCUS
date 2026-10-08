@@ -33,6 +33,8 @@ class Config:
     toxicity_max_premium_bps: str = "2"
     exit_fee_reserve_fraction: str = "0"
     order_equity_fraction: str = "0.1"
+    order_notional_min: str | None = None
+    order_notional_max: str | None = None
     max_position_equity_fraction: str = "0.5"
     stop_loss_equity_fraction: str = "0.02"
     leverage_cap: int = 3
@@ -100,6 +102,13 @@ class Config:
             raise ValueError("this bot caps leverage at 5")
         if not 0 < D(self.order_equity_fraction) <= 1:
             raise ValueError("invalid order fraction")
+        if (self.order_notional_min is None) != (self.order_notional_max is None):
+            raise ValueError("order notional bounds must be configured together")
+        if self.order_notional_min is not None:
+            assert self.order_notional_max is not None
+            low,high=D(self.order_notional_min),D(self.order_notional_max)
+            if not low.is_finite() or not high.is_finite() or low<=0 or high<low:
+                raise ValueError("invalid order notional bounds")
         if not 0 < D(self.max_position_equity_fraction) <= self.leverage_cap:
             raise ValueError("position fraction exceeds leverage cap")
         if not 0 < D(self.stop_loss_equity_fraction) < 1:
