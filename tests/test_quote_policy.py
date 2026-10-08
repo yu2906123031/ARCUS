@@ -60,6 +60,18 @@ class QuotePolicyTests(unittest.TestCase):
         reverse=fair_value(c,replace(b,bid_size=D(1),ask_size=D(9)))
         self.assertEqual(reverse["fair_shift_bps"],D(-1))
 
+    def test_microprice_requires_two_seconds_of_one_way_confirmation(self):
+        c=replace(Config(),microprice_weight="1",max_fair_shift_bps=".4",microprice_confirm_seconds=2)
+        policy=QuotePolicy()
+        positive=replace(book("99900","100100"),bid_size=D(9),ask_size=D(1),received=10)
+        negative=replace(positive,bid_size=D(1),ask_size=D(9),received=11)
+        self.assertEqual(D(policy.effective(c,positive).microprice_weight),D(0))
+        self.assertEqual(D(policy.effective(c,replace(positive,received=11.99)).microprice_weight),D(0))
+        self.assertEqual(D(policy.effective(c,negative).microprice_weight),D(0))
+        self.assertEqual(D(policy.effective(c,replace(negative,received=13)).microprice_weight),D(1))
+        effective=policy.effective(c,replace(negative,received=13.1))
+        self.assertEqual(fair_value(effective,negative)["fair_shift_bps"],D("-.4"))
+
     def test_cubic_skew_is_small_near_zero_and_stronger_near_cap(self):
         c=replace(Config(),inventory_skew_bps="2",inventory_cubic_bps="1")
         self.assertEqual(inventory_shift(c,D(".1")),D("-.201"))
@@ -73,9 +85,17 @@ class QuotePolicyTests(unittest.TestCase):
         self.assertEqual(len(policy.samples),1)
 
     def test_invalid_controls_and_live_leverage(self):
-        for name,value in [("inventory_skew_bps","4"),("max_spread_bps","1"),("exit_fee_reserve_fraction","2"),("adaptive_spread",1),("volatility_multiplier","NaN")]:
+        for name,value in [("inventory_skew_bps","4.1"),("max_spread_bps","1"),("exit_fee_reserve_fraction","2"),("adaptive_spread",1),("volatility_multiplier","NaN")]:
             with self.subTest(name=name),self.assertRaises(ValueError): replace(Config(),**{name:value}).validate()
         self.assertEqual(load("mm_live_btc_100.json").leverage_cap,2)
+
+    def test_live_wear_first_configuration(self):
+        c=load("mm_live_btc_100.json")
+        expected={"max_reprice_bps":"2","max_fair_shift_bps":".4","inventory_skew_bps":"4",
+                  "inventory_cubic_bps":"2","order_notional_min":"40","order_notional_max":"60",
+                  "toxicity_max_premium_bps":"4","spread_decay_bps_per_second":".02"}
+        for name,value in expected.items(): self.assertEqual(D(getattr(c,name)),D(value),name)
+        self.assertEqual(c.microprice_confirm_seconds,2)
 
     def test_half_cap_inventory_uses_only_passive_reduce_quote_at_touch(self):
         c=replace(Config(),max_position_equity_fraction=".15",order_notional_min="40",order_notional_max="80")

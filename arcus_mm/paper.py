@@ -8,6 +8,7 @@ class Paper:
         self.c,self.market,self.ledger,self.log = c,market,ledger,log
         self.maker_fee,self.taker_fee = maker_fee,taker_fee
         self.orders,self.seen = {},set()
+        self.funding_cumulative=D(0)
         self.on_fill=None
         self.fill_sequence=0
     async def place(self,quote,book,ioc=False):
@@ -24,11 +25,14 @@ class Paper:
         self.orders[quote.slot] = o
         self.log("order",side=quote.side,price=quote.price,quantity=quote.qty,client_id=o.client_id,reduce_only=quote.reduce,tif="ALO")
         return o
-    async def cancel(self,slot):
+    async def cancel(self,slot,reason="unspecified"):
         o = self.orders.pop(slot,None)
-        if o: self.log("cancel",client_id=o.client_id)
-    async def cancel_all(self):
-        for slot in list(self.orders): await self.cancel(slot)
+        if o:
+            lifetime=max(D(0),D(str(time.monotonic()-o.created)))
+            self.log("cancel_request",client_id=o.client_id,reason=reason,order_lifetime_seconds=lifetime)
+            self.log("cancel",client_id=o.client_id,reason=reason,order_lifetime_seconds=lifetime)
+    async def cancel_all(self,reason="risk_cleanup"):
+        for slot in list(self.orders): await self.cancel(slot,reason=reason)
     def fill(self,quote,qty,px,maker,timestamp_us=None,trade_id=None):
         fee = qty*px*(self.maker_fee if maker else self.taker_fee)
         self.ledger.fill(quote.side,qty,px,fee,maker)

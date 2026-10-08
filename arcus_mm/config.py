@@ -31,6 +31,9 @@ class Config:
     toxicity_threshold_bps: str = "0.5"
     toxicity_multiplier: str = "1"
     toxicity_max_premium_bps: str = "2"
+    microprice_confirm_seconds: float = 0
+    funding_exit_window_seconds: int = 0
+    funding_exit_bps: str = "0"
     exit_fee_reserve_fraction: str = "0"
     order_equity_fraction: str = "0.1"
     order_notional_min: str | None = None
@@ -85,7 +88,7 @@ class Config:
             raise ValueError("invalid combined inventory skew")
         if D(self.microprice_weight)>1 or D(self.max_fair_shift_bps)>3:
             raise ValueError("invalid microprice controls")
-        if D(self.inventory_skew_bps)>3: raise ValueError("inventory skew must be <=3 bps")
+        if D(self.inventory_skew_bps)>4: raise ValueError("inventory skew must be <=4 bps")
         if not D(self.spread_bps)<=D(self.max_spread_bps)<=50: raise ValueError("invalid maximum spread")
         if not D(self.reprice_bps)<=D(self.max_reprice_bps)<=D(self.max_spread_bps): raise ValueError("invalid maximum reprice")
         if not 0<D(self.volatility_multiplier)<=10: raise ValueError("invalid volatility multiplier")
@@ -121,6 +124,9 @@ class Config:
             if isinstance(value, bool) or not D(str(value)).is_finite() or value <= 0:
                 raise ValueError("invalid " + name)
         if not 30<=self.rejection_restart_seconds<=3600:raise ValueError("invalid rejection restart delay")
+        if not 0<=self.microprice_confirm_seconds<=10: raise ValueError("invalid microprice confirmation delay")
+        if not 0<=self.funding_exit_window_seconds<=3600 or not 0<=D(self.funding_exit_bps)<=5:
+            raise ValueError("invalid funding exit controls")
         if self.markout_max_lag_seconds>5 or not 30<=self.toxicity_window_seconds<=3600: raise ValueError("invalid quality window")
         if type(self.server_protection) is not bool: raise ValueError("invalid server_protection")
         for name in ("protection_seconds","protection_refresh_seconds"):

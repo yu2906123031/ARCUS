@@ -48,6 +48,15 @@ class Engine:
         if self.live and (not self.trading_enabled or fill["timestamp_us"]<self.quality_start_us):return
         self.quality.add_fill(fill)
 
+    def funding_reduce_bps(self):
+        stamp=getattr(self.api,"next_funding_at",0)
+        if not stamp or not self.c.funding_exit_window_seconds: return D(0)
+        seconds=stamp/1000000 if stamp>10**12 else stamp
+        remaining=seconds-time.time()
+        rate=getattr(self.api,"funding_rate",D(0))
+        pays=(self.ledger.qty>0 and rate>0) or (self.ledger.qty<0 and rate<0)
+        return D(self.c.funding_exit_bps) if pays and 0<=remaining<=self.c.funding_exit_window_seconds else D(0)
+
     def attach_observers(self,set_feed=True):
         self.venue.on_fill=self.observe_fill
         self.quality_start_us=self.api.stamp()//1000 if self.live else 0
@@ -66,7 +75,7 @@ class Engine:
                     self.last_clear_revision==self.venue.order_revision and
                     self.venue.account_qty==self.ledger.qty and self.venue.last_account_seq>=self.venue.last_fill_seq)
 
-    async def cancel_all(self):
+    async def cancel_all(self,reason="risk_cleanup"):
         async with self.cancel_lock:
             if self.cancel_terminal_error is not None: raise self.cancel_terminal_error
             revision=getattr(self.venue,"order_revision",0)
@@ -75,7 +84,7 @@ class Engine:
             retry_delay=1
             while True:
                 try:
-                    await self.venue.cancel_all()
+                    await self.venue.cancel_all(reason=reason)
                     self.last_clear_revision=getattr(self.venue,"order_revision",0)
                     if self.halt: self.safety_cancelled=True
                     return
@@ -223,13 +232,14 @@ class Engine:
             # Any fills while cancels were pending change the next target budget.
             return
         quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)),self.quality.toxicity(now))
-        desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,self.quote_policy.side_spreads)}
+        desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,
+                                              self.quote_policy.side_spreads,self.funding_reduce_bps())}
         cancelled_quotes=False
         for slot,o in list(self.venue.orders.items()):
             q=desired.get(slot)
             if q is None or replace_needed(o.quote,q,self.api.market.tick,quote_config.reprice_bps):
                 self.log("quote_cancel",slot=slot,reason="target_removed" if q is None else "quote_changed",old_price=o.quote.price,new_price=q.price if q else None)
-                await self.venue.cancel(slot)
+                await self.venue.cancel(slot,reason="target_removed" if q is None else "quote_changed")
                 # Only cancellations share a cycle; placements use a fresh next-cycle plan.
                 cancelled_quotes=True
                 if not self.c.batch_quote_cancels or self.halt or not self.api.fresh(): return
@@ -239,7 +249,8 @@ class Engine:
             if self.halt or not self.api.fresh(): return
             book=self.api.book
             quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)),self.quality.toxicity(time.monotonic()))
-            desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,self.quote_policy.side_spreads)}
+            desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,
+                                              self.quote_policy.side_spreads,self.funding_reduce_bps())}
         for slot,q in desired.items():
             if slot in self.venue.orders: continue
             if self.halt or not self.api.fresh(): return
@@ -260,6 +271,7 @@ class Engine:
         if now-self.last_report>=5:
             self.log("quote_policy",**self.quote_policy.state,inventory_skew_bps=self.c.inventory_skew_bps)
             self.log("position",**self.ledger.report(book,self.taker_fee),
+                     funding_cumulative_usd=self.venue.funding_cumulative if self.live else D(0),
                      authoritative_equity=self.venue.equity if self.live else equity,
                      account_position=self.venue.account_qty if self.live else self.ledger.qty)
             self.last_report=now

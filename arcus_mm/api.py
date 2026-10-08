@@ -42,6 +42,8 @@ class PublicAPI:
         self.on_private=lambda msg: None
         self.on_disconnect=lambda: None
         self.market=None
+        self.funding_rate=D(0)
+        self.next_funding_at=0
         self.signer=None
         self.cooldown=0.0
         self.limit_streak=0
@@ -88,8 +90,11 @@ class PublicAPI:
 
     async def metadata(self):
         rows=(await self.get("/v1/markets"))["markets"]
-        row=next(x for x in rows if x["marketDisplayName"]==self.c.market)
+        row=next((r for r in rows if r.get("marketDisplayName")==self.c.market or r.get("symbol")==self.c.market),None)
+        if row is None: raise ExchangeError("market not found")
         self.market=Market.parse(row)
+        self.funding_rate=number(row.get("fundingRate",row.get("currentFundingRate",0)))
+        self.next_funding_at=int(row.get("nextFundingAt",0) or 0)
         tier=next(x for x in (await self.get("/v1/feetiers"))["tiers"] if x["level"]==0)
         maker,taker=number(tier["maker_fee_ppm"])/D(1000000),number(tier["taker_fee_ppm"])/D(1000000)
         if not -D("0.01")<maker<D("0.01") or not 0<=taker<D("0.01"): raise ValueError("invalid fee table")
@@ -246,6 +251,7 @@ class Live:
         self.last_fill_seq=-1
         self.arm_time=0.0
         self.free_collateral=D(0)
+        self.funding_cumulative=D(0)
         self.resume_info=None
         self.checkpoint_dir=None
         self.checkpoint_trade_id=None
@@ -454,6 +460,10 @@ class Live:
             a=await self.api.get("/v1/account",self.scope())
         self.equity=number(a["equity"])
         self.free_collateral=number(a["freeCollateral"])
+        position=a["positions"].get(str(self.api.market.id))
+        if position and position.get("cumulativeFunding") is not None:
+            funding=position["cumulativeFunding"]
+            self.funding_cumulative=number(funding.get("allTime",0) if isinstance(funding,dict) else funding)
         if self.equity<=0: raise ExchangeError("account has no positive equity")
         self.ledger.initial=min(self.equity,D(self.c.capital_cap)) if self.c.capital_cap is not None else self.equity
         if resume is not None:
@@ -599,6 +609,10 @@ class Live:
             self.fatal="unexpected position in another market"
         p=a["positions"].get(str(self.api.market.id))
         self.account_qty=number(p["size"]) if p else D(0)
+        if p and p.get("cumulativeFunding") is not None:
+            funding=p["cumulativeFunding"]
+            raw=funding.get("allTime",0) if isinstance(funding,dict) else funding
+            self.funding_cumulative=number(raw)
         self.equity=number(a["equity"])
         self.free_collateral=number(a["freeCollateral"])
         self.account_time=time.monotonic()
@@ -759,11 +773,11 @@ class Live:
             raise ExchangeError("engine rejected order")
         return o
 
-    async def cancel(self,slot):
+    async def cancel(self,slot,reason="unspecified"):
         o=self.orders.get(slot)
         if not o: return
         if not o.order_id: raise UncertainOrder("cannot cancel an unacknowledged order without confirming its identity")
-        await self.cancel_owned_individually([dict(clientId=o.client_id,orderId=o.order_id,marketId=self.api.market.id)])
+        await self.cancel_owned_individually([dict(clientId=o.client_id,orderId=o.order_id,marketId=self.api.market.id)],reason=reason)
 
     async def owned_open_orders(self):
         rows=(await self.api.get("/v1/openOrders",self.scope()))["orders"]
@@ -795,11 +809,12 @@ class Live:
             await asyncio.sleep(.25)
         raise UncertainOrder("cancel-all did not reach confirmed terminal state; cleanup remains unverified")
 
-    async def cancel_owned_individually(self,rows):
+    async def cancel_owned_individually(self,rows,reason="cleanup"):
         for row in rows:
             order=self.history[row["clientId"]]
             if order.status in TERMINAL: continue
-            self.log("cancel_request",client_id=order.client_id)
+            self.log("cancel_request",client_id=order.client_id,reason=reason,
+                     order_lifetime_seconds=max(D(0),D(str(time.monotonic()-order.created))))
             try:
                 await self.post("cancelOrder",dict(self.scope(),marketId=self.api.market.id,kind="clientId",clientId=order.client_id))
             except (UnclassifiedRejection,RateLimited):
@@ -813,7 +828,7 @@ class Live:
                 continue
             await self.confirmed(order,terminal=True)
 
-    async def cancel_all(self):
+    async def cancel_all(self,reason="risk_cleanup"):
         rows=await self.owned_open_orders()
         if not rows:
             await self.verify_cleanup()
@@ -822,7 +837,7 @@ class Live:
         # Ordinary sessions have one or two proven orders. Account-wide cancellation is optional.
         if len(rows)<=2 or time.monotonic()<self.bulk_cancel_disabled_until:
             self.log("cancel_cleanup_mode",cleanup_mode="individual",count=len(rows))
-            await self.cancel_owned_individually(rows)
+            await self.cancel_owned_individually(rows,reason=reason)
             await self.verify_cleanup()
             return
         try:
@@ -831,7 +846,7 @@ class Live:
             self.bulk_cancel_disabled_until=time.monotonic()+60
             self.log("cancel_all_fallback",reason=type(exc).__name__)
             rows=await self.owned_open_orders()
-            if rows: await self.cancel_owned_individually(rows)
+            if rows: await self.cancel_owned_individually(rows,reason=reason)
             await self.verify_cleanup()
             self.log("cancel_all_recovered",reason="verified_after_bulk_rejection")
             return
