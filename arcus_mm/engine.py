@@ -233,7 +233,13 @@ class Engine:
                 # Only cancellations share a cycle; placements use a fresh next-cycle plan.
                 cancelled_quotes=True
                 if not self.c.batch_quote_cancels or self.halt or not self.api.fresh(): return
-        if cancelled_quotes: return
+        if cancelled_quotes:
+            # Confirmed cancellations free the logical slots immediately. Re-plan from the
+            # newest websocket book so routine repricing does not leave an empty cycle.
+            if self.halt or not self.api.fresh(): return
+            book=self.api.book
+            quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)),self.quality.toxicity(time.monotonic()))
+            desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,self.quote_policy.side_spreads)}
         for slot,q in desired.items():
             if slot in self.venue.orders: continue
             if self.halt or not self.api.fresh(): return

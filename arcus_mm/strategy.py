@@ -91,6 +91,7 @@ def targets(c, market, book, equity, position, side_spreads=None):
     if equity <= 0: return []
     cap = min(D(c.max_position_equity_fraction),D(c.leverage_cap))*equity/book.mid
     over = abs(position) >= cap
+    inventory_exit = abs(position) >= cap * D("0.5")
     buy_budget, sell_budget = max(D(0),cap-position), max(D(0),cap+position)
     inventory_ratio=max(D(-1),min(D(1),position/cap))
     fair=fair_value(c,book)
@@ -98,20 +99,24 @@ def targets(c, market, book, equity, position, side_spreads=None):
     result, used = [], set()
     for level in range(1,3 if c.strategy == "grid" else 2):
         for side in ("BUY","SELL"):
-            if over and ((position>0 and side=="BUY") or (position<0 and side=="SELL")): continue
+            if inventory_exit and ((position>0 and side=="BUY") or (position<0 and side=="SELL")): continue
             half_spread=D((side_spreads or {}).get(side,c.spread_bps))
             distance = half_spread*level/BPS
             px = market.price(center*(1-distance if side=="BUY" else 1+distance),side)
             # An inventory shift must not remove the reducing side by crossing BBO.
             reducing=(position>0 and side=="SELL") or (position<0 and side=="BUY")
+            if reducing and inventory_exit:
+                # Keep the inventory exit passive while moving it to the front of the BBO.
+                px=market.price(min(book.bid+market.tick,book.ask-market.tick) if side=="BUY"
+                                else max(book.ask-market.tick,book.bid+market.tick),side)
             if reducing and ((side=="BUY" and px>=book.ask) or (side=="SELL" and px<=book.bid)):
                 px=market.price(book.bid if side=="BUY" else book.ask,side)
             if px<=0 or (side=="BUY" and px>=book.ask) or (side=="SELL" and px<=book.bid) or (side,px) in used: continue
             budget = buy_budget if side=="BUY" else sell_budget
-            if over: budget = min(budget,abs(position)-sum(q.qty for q in result))
+            if inventory_exit: budget = min(budget,abs(position)-sum(q.qty for q in result))
             qty = market.quantity(min(order_notional(c,equity)/px,budget))
             if qty<market.min_size or (not over and qty*px<market.min_notional): continue
-            result.append(Quote(f"{side}-{level}",side,px,qty,over,half_spread)); used.add((side,px))
+            result.append(Quote(f"{side}-{level}",side,px,qty,inventory_exit,half_spread)); used.add((side,px))
             if side=="BUY": buy_budget -= qty
             else: sell_budget -= qty
     if max((q.price for q in result if q.side=="BUY"),default=D(0)) >= min((q.price for q in result if q.side=="SELL"),default=D("Infinity")):

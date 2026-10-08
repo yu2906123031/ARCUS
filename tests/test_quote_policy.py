@@ -75,6 +75,19 @@ class QuotePolicyTests(unittest.TestCase):
     def test_invalid_controls_and_live_leverage(self):
         for name,value in [("inventory_skew_bps","4"),("max_spread_bps","1"),("exit_fee_reserve_fraction","2"),("adaptive_spread",1),("volatility_multiplier","NaN")]:
             with self.subTest(name=name),self.assertRaises(ValueError): replace(Config(),**{name:value}).validate()
-        self.assertEqual(load("mm_live_btc_100.json").leverage_cap,5)
+        self.assertEqual(load("mm_live_btc_100.json").leverage_cap,2)
+
+    def test_half_cap_inventory_uses_only_passive_reduce_quote_at_touch(self):
+        c=replace(Config(),max_position_equity_fraction=".15",order_notional_min="40",order_notional_max="80")
+        b=book()
+        cap=D(500)*D(".15")/b.mid
+        for position,side in ((cap*D(".5"),"SELL"),(-cap*D(".5"),"BUY")):
+            qs=targets(c,market(),b,D(500),position)
+            self.assertEqual(len(qs),1)
+            self.assertEqual(qs[0].side,side)
+            self.assertTrue(qs[0].reduce)
+            self.assertLess(qs[0].qty,abs(position)+market().step)
+            self.assertLess(qs[0].price,b.ask)
+            self.assertGreater(qs[0].price,b.bid)
 
 if __name__=="__main__": unittest.main()
