@@ -92,12 +92,13 @@ class QuotePolicyTests(unittest.TestCase):
     def test_live_wear_first_configuration(self):
         c=load("mm_live_btc_100.json")
         expected={"max_reprice_bps":"2","max_fair_shift_bps":".4","inventory_skew_bps":"4",
-                  "inventory_cubic_bps":"2","order_notional_min":"20","order_notional_max":"30",
+                  "inventory_cubic_bps":"2","order_notional_min":"50","order_notional_max":"100",
                   "toxicity_max_premium_bps":"4","spread_decay_bps_per_second":".02"}
         for name,value in expected.items(): self.assertEqual(D(getattr(c,name)),D(value),name)
         self.assertEqual(c.microprice_confirm_seconds,2)
         self.assertTrue(c.momentum_filter_enabled)
         self.assertEqual(c.max_order_age_seconds,10)
+        self.assertEqual(D(c.max_position_equity_fraction),D(".25"))
 
     def test_momentum_filter_blocks_adverse_opening_side_and_keeps_reduction(self):
         c=replace(Config(),momentum_filter_enabled=True,momentum_window_seconds=3,momentum_threshold_bps="2",
