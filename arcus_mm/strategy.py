@@ -57,6 +57,12 @@ class QuotePolicy:
         if not self.samples or now-self.samples[-1][0]>=1:
             self.samples.append((now,book.mid))
         moves=[(b[1]/a[1]-1)*BPS for a,b in zip(self.samples,list(self.samples)[1:])]
+        anchors=[sample for sample in self.samples if now-sample[0]>=c.momentum_window_seconds]
+        anchor=anchors[-1][1] if anchors else None
+        momentum_bps=(book.mid/anchor-1)*BPS if anchor else D(0)
+        blocked_sides=[]
+        if c.momentum_filter_enabled and abs(momentum_bps)>=D(c.momentum_threshold_bps):
+            blocked_sides=["SELL" if momentum_bps>0 else "BUY"]
         volatility=(sum((x*x for x in moves),D(0))/D(len(moves))).sqrt() if len(moves)>=4 else D(0)
         ewma=self.ewma.snapshot()
         if c.volatility_mode=="ewma":volatility=max(ewma.values())
@@ -93,6 +99,7 @@ class QuotePolicy:
                         side_spreads_bps=sides,toxicity_premiums_bps=premiums,toxicity_samples=counts,regime=regime,
                         fee_floor_bps=fee_floor,samples=len(self.samples),strategy=strategy,
                         microprice_direction=self.micro_direction,microprice_confirmed=self.micro_confirmed,
+                        momentum_bps=momentum_bps,blocked_sides=blocked_sides,
                         **fair_value(effective,book))
         return replace(effective,spread_bps=str(spread),reprice_bps=str(reprice),strategy=strategy)
 
@@ -108,12 +115,13 @@ def order_notional(c,equity):
     return D(low_cents+secrets.randbelow(high_cents-low_cents+1))*scale
 
 
-def targets(c, market, book, equity, position, side_spreads=None, funding_reduce_bps=D(0)):
+def targets(c, market, book, equity, position, side_spreads=None, funding_reduce_bps=D(0), blocked_sides=None):
     """Reserve each side's worst-case fills separately; never net open orders."""
     if equity <= 0: return []
     cap = min(D(c.max_position_equity_fraction),D(c.leverage_cap))*equity/book.mid
     over = abs(position) >= cap
     inventory_exit = abs(position) >= cap * D("0.5")
+    inventory_one_sided = abs(position) >= cap * D(c.inventory_one_sided_ratio)
     buy_budget, sell_budget = max(D(0),cap-position), max(D(0),cap+position)
     inventory_ratio=max(D(-1),min(D(1),position/cap))
     fair=fair_value(c,book)
@@ -121,12 +129,14 @@ def targets(c, market, book, equity, position, side_spreads=None, funding_reduce
     result, used = [], set()
     for level in range(1,3 if c.strategy == "grid" else 2):
         for side in ("BUY","SELL"):
+            reducing=(position>0 and side=="SELL") or (position<0 and side=="BUY")
+            if side in (blocked_sides or ()) and not reducing: continue
+            if inventory_one_sided and position and not reducing: continue
             if inventory_exit and ((position>0 and side=="BUY") or (position<0 and side=="SELL")): continue
             half_spread=D((side_spreads or {}).get(side,c.spread_bps))
             distance = half_spread*level/BPS
             px = market.price(center*(1-distance if side=="BUY" else 1+distance),side)
             # An inventory shift must not remove the reducing side by crossing BBO.
-            reducing=(position>0 and side=="SELL") or (position<0 and side=="BUY")
             if reducing and inventory_exit:
                 # Keep the inventory exit passive while moving it to the front of the BBO.
                 px=market.price(min(book.bid+market.tick,book.ask-market.tick) if side=="BUY"

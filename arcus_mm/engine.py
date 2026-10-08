@@ -233,13 +233,17 @@ class Engine:
             return
         quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)),self.quality.toxicity(now))
         desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,
-                                              self.quote_policy.side_spreads,self.funding_reduce_bps())}
+                                              self.quote_policy.side_spreads,self.funding_reduce_bps(),
+                                              self.quote_policy.state.get("blocked_sides"))}
         cancelled_quotes=False
         for slot,o in list(self.venue.orders.items()):
             q=desired.get(slot)
-            if q is None or replace_needed(o.quote,q,self.api.market.tick,quote_config.reprice_bps):
-                self.log("quote_cancel",slot=slot,reason="target_removed" if q is None else "quote_changed",old_price=o.quote.price,new_price=q.price if q else None)
-                await self.venue.cancel(slot,reason="target_removed" if q is None else "quote_changed")
+            age_limit=self.c.max_reduce_order_age_seconds if o.quote.reduce else self.c.max_order_age_seconds
+            stale=now-o.created>=age_limit
+            if q is None or stale or replace_needed(o.quote,q,self.api.market.tick,quote_config.reprice_bps):
+                reason="target_removed" if q is None else "stale_order" if stale else "quote_changed"
+                self.log("quote_cancel",slot=slot,reason=reason,old_price=o.quote.price,new_price=q.price if q else None)
+                await self.venue.cancel(slot,reason=reason)
                 # Only cancellations share a cycle; placements use a fresh next-cycle plan.
                 cancelled_quotes=True
                 if not self.c.batch_quote_cancels or self.halt or not self.api.fresh(): return
@@ -250,7 +254,8 @@ class Engine:
             book=self.api.book
             quote_config=self.quote_policy.effective(self.c,book,getattr(self,"maker_fee",D(0)),getattr(self,"taker_fee",D(0)),self.quality.toxicity(time.monotonic()))
             desired={q.slot:q for q in targets(quote_config,self.api.market,book,equity,self.ledger.qty,
-                                              self.quote_policy.side_spreads,self.funding_reduce_bps())}
+                                              self.quote_policy.side_spreads,self.funding_reduce_bps(),
+                                              self.quote_policy.state.get("blocked_sides"))}
         for slot,q in desired.items():
             if slot in self.venue.orders: continue
             if self.halt or not self.api.fresh(): return

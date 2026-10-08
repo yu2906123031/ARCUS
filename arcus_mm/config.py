@@ -31,6 +31,12 @@ class Config:
     toxicity_threshold_bps: str = "0.5"
     toxicity_multiplier: str = "1"
     toxicity_max_premium_bps: str = "2"
+    momentum_filter_enabled: bool = False
+    momentum_window_seconds: float = 3
+    momentum_threshold_bps: str = "2"
+    max_order_age_seconds: float = 30
+    max_reduce_order_age_seconds: float = 15
+    inventory_one_sided_ratio: str = "0.5"
     microprice_confirm_seconds: float = 0
     funding_exit_window_seconds: int = 0
     funding_exit_bps: str = "0"
@@ -77,11 +83,12 @@ class Config:
             raise ValueError("reprice_bps must not exceed spread_bps")
         if type(self.batch_quote_cancels) is not bool: raise ValueError("invalid batch_quote_cancels")
         if type(self.toxicity_enabled) is not bool: raise ValueError("invalid toxicity_enabled")
+        if type(self.momentum_filter_enabled) is not bool: raise ValueError("invalid momentum_filter_enabled")
         if self.volatility_mode not in ("rms","ewma"): raise ValueError("invalid volatility_mode")
         if type(self.toxicity_min_samples) is not int or not 3<=self.toxicity_min_samples<=1000:
             raise ValueError("invalid toxicity_min_samples")
         if type(self.adaptive_spread) is not bool: raise ValueError("invalid adaptive_spread")
-        for name in ("inventory_skew_bps", "inventory_cubic_bps", "microprice_weight", "max_fair_shift_bps", "max_spread_bps", "max_reprice_bps", "volatility_multiplier", "exit_fee_reserve_fraction", "spread_decay_bps_per_second", "toxicity_threshold_bps", "toxicity_multiplier", "toxicity_max_premium_bps"):
+        for name in ("inventory_skew_bps", "inventory_cubic_bps", "microprice_weight", "max_fair_shift_bps", "max_spread_bps", "max_reprice_bps", "volatility_multiplier", "exit_fee_reserve_fraction", "spread_decay_bps_per_second", "toxicity_threshold_bps", "toxicity_multiplier", "toxicity_max_premium_bps", "momentum_threshold_bps", "inventory_one_sided_ratio"):
             value=D(getattr(self,name))
             if not value.is_finite() or value<0: raise ValueError("invalid "+name)
         if D(self.inventory_cubic_bps)>3 or D(self.inventory_cubic_bps)+D(self.inventory_skew_bps)>6:
@@ -119,7 +126,7 @@ class Config:
         if D(self.exit_slippage_bps) > 500:
             raise ValueError("IOC slippage bound must be <=500 bps")
         for name in ("disconnect_seconds", "max_clock_skew_ms", "max_order_failures", "quote_interval_seconds",
-                     "account_refresh_seconds", "confirmation_seconds", "mutation_interval_seconds", "rejection_restart_seconds", "markout_max_lag_seconds", "toxicity_window_seconds"):
+                     "account_refresh_seconds", "confirmation_seconds", "mutation_interval_seconds", "rejection_restart_seconds", "markout_max_lag_seconds", "toxicity_window_seconds", "momentum_window_seconds", "max_order_age_seconds", "max_reduce_order_age_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not D(str(value)).is_finite() or value <= 0:
                 raise ValueError("invalid " + name)
@@ -128,6 +135,11 @@ class Config:
         if not 0<=self.funding_exit_window_seconds<=3600 or not 0<=D(self.funding_exit_bps)<=5:
             raise ValueError("invalid funding exit controls")
         if self.markout_max_lag_seconds>5 or not 30<=self.toxicity_window_seconds<=3600: raise ValueError("invalid quality window")
+        if not 1<=self.momentum_window_seconds<=10 or not 1<=D(self.momentum_threshold_bps)<=20:
+            raise ValueError("invalid momentum filter")
+        if not 2<=self.max_order_age_seconds<=120: raise ValueError("invalid maximum order age")
+        if not 2<=self.max_reduce_order_age_seconds<=self.max_order_age_seconds: raise ValueError("invalid reduce order age")
+        if not D("0.1")<=D(self.inventory_one_sided_ratio)<=D("0.5"): raise ValueError("invalid inventory one-sided ratio")
         if type(self.server_protection) is not bool: raise ValueError("invalid server_protection")
         for name in ("protection_seconds","protection_refresh_seconds"):
             value=getattr(self,name)

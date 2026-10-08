@@ -92,10 +92,25 @@ class QuotePolicyTests(unittest.TestCase):
     def test_live_wear_first_configuration(self):
         c=load("mm_live_btc_100.json")
         expected={"max_reprice_bps":"2","max_fair_shift_bps":".4","inventory_skew_bps":"4",
-                  "inventory_cubic_bps":"2","order_notional_min":"40","order_notional_max":"60",
+                  "inventory_cubic_bps":"2","order_notional_min":"20","order_notional_max":"30",
                   "toxicity_max_premium_bps":"4","spread_decay_bps_per_second":".02"}
         for name,value in expected.items(): self.assertEqual(D(getattr(c,name)),D(value),name)
         self.assertEqual(c.microprice_confirm_seconds,2)
+        self.assertTrue(c.momentum_filter_enabled)
+        self.assertEqual(c.max_order_age_seconds,10)
+
+    def test_momentum_filter_blocks_adverse_opening_side_and_keeps_reduction(self):
+        c=replace(Config(),momentum_filter_enabled=True,momentum_window_seconds=3,momentum_threshold_bps="2",
+                  max_position_equity_fraction=".15",order_notional_min="20",order_notional_max="20")
+        policy=QuotePolicy()
+        for stamp,mid in ((1,"100000"),(2,"100000"),(3,"100000"),(4,"100030")):
+            b=book(str(D(mid)-1),str(D(mid)+1));b.received=stamp
+            effective=policy.effective(c,b)
+        self.assertEqual(policy.state["blocked_sides"],["SELL"])
+        neutral=targets(effective,market(),b,D(500),D(0),blocked_sides=policy.state["blocked_sides"])
+        self.assertEqual({q.side for q in neutral},{"BUY"})
+        reducing=targets(effective,market(),b,D(500),D(".0004"),blocked_sides=policy.state["blocked_sides"])
+        self.assertIn("SELL",{q.side for q in reducing})
 
     def test_half_cap_inventory_uses_only_passive_reduce_quote_at_touch(self):
         c=replace(Config(),max_position_equity_fraction=".15",order_notional_min="40",order_notional_max="80")
@@ -109,5 +124,15 @@ class QuotePolicyTests(unittest.TestCase):
             self.assertLess(qs[0].qty,abs(position)+market().step)
             self.assertLess(qs[0].price,b.ask)
             self.assertGreater(qs[0].price,b.bid)
+
+    def test_inventory_becomes_one_sided_at_configured_ratio(self):
+        c=replace(Config(),inventory_one_sided_ratio=".3",max_position_equity_fraction=".15",
+                  order_notional_min="20",order_notional_max="20")
+        b=book();cap=D(500)*D(".15")/b.mid
+        below=targets(c,market(),b,D(500),cap*D(".29"))
+        self.assertEqual({q.side for q in below},{"BUY","SELL"})
+        for position,side in ((cap*D(".3"),"SELL"),(-cap*D(".3"),"BUY")):
+            qs=targets(c,market(),b,D(500),position)
+            self.assertEqual({q.side for q in qs},{side})
 
 if __name__=="__main__": unittest.main()
