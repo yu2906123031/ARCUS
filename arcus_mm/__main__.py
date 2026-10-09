@@ -13,7 +13,7 @@ from .models import Log, Ledger
 from .diagnostics import exception_locations
 
 def main(argv=None):
-    p=argparse.ArgumentParser(description="Independent BTC-USD Arcus maker; default PAPER")
+    p=argparse.ArgumentParser(description="Independent Arcus maker; default PAPER")
     p.add_argument("command",choices=("run","doctor"),nargs="?",default="run")
     p.add_argument("--config",default="mm_config.json")
     p.add_argument("--live",action="store_true",help="explicitly authorize real order placement")
@@ -44,7 +44,7 @@ def main(argv=None):
     if a.strategy: c=replace(c,strategy=a.strategy)
     if not c.paper and not a.live: p.error("config paper=false requires explicit --live")
     if a.seconds<0 or not __import__("math").isfinite(a.seconds): p.error("invalid seconds")
-    if a.live and c.market != "BTC-USD": p.error("ETH currently supports paper mode only")
+    if a.live and c.market == "ETH-USD": p.error("ETH currently supports paper mode only")
     c.validate()
     if a.auto_restart:
         if a.command!="run" or not a.live or not a.auto_resume: p.error("auto-restart requires run --live --auto-resume")
@@ -67,7 +67,9 @@ def main(argv=None):
                     minimum_base_size=m.min_size,order_equity_fraction=c.order_equity_fraction)
             finally: await api.http.aclose()
             return
-        lock=Path("mm_runtime.lock")
+        # Each account/market log directory owns its runtime lock, allowing
+        # isolated maker instances while still preventing duplicate takeover.
+        lock=Path(c.log_dir)/"mm_runtime.lock"
         try:
             fd=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
         except FileExistsError: raise RuntimeError("another maker/stale lock exists; verify process before removing mm_runtime.lock") from None

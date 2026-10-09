@@ -33,13 +33,14 @@ def credentials():
 class Configuration(unittest.TestCase):
     def test_defaults_paper_and_three(self):
         c=Config(); c.validate(); self.assertTrue(c.paper); self.assertEqual(c.leverage_cap,3)
+        replace(c,market="SPY-USD").validate()
     def test_five_allowed_six_rejected(self):
         replace(Config(),leverage_cap=5).validate()
         with self.assertRaises(ValueError): replace(Config(),leverage_cap=6).validate()
     def test_high_leverage_rejected(self):
         with self.assertRaises(ValueError): replace(Config(),leverage_cap=40).validate()
     def test_invalid_values(self):
-        for name,value in [("strategy","smart"),("reprice_bps","NaN"),("reprice_bps","3"),("market","SOL-USD"),("bias_bps","4"),("paper",1),
+        for name,value in [("strategy","smart"),("reprice_bps","NaN"),("reprice_bps","3"),("market","UNKNOWN-USD"),("bias_bps","4"),("paper",1),
                            ("order_equity_fraction","NaN"),("disconnect_seconds",0),("max_position_equity_fraction","4")]:
             with self.subTest(name=name),self.assertRaises((ValueError,ArithmeticError)):
                 replace(Config(),**{name:value}).validate()

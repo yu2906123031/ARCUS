@@ -69,8 +69,8 @@ class Config:
     log_dir: str = "mm_logs"
 
     def validate(self):
-        if self.market not in ("BTC-USD", "ETH-USD") or self.strategy not in ("mid", "grid"):
-            raise ValueError("only BTC-USD/ETH-USD and one of mid/grid are supported")
+        if self.market not in ("BTC-USD", "ETH-USD", "SPY-USD") or self.strategy not in ("mid", "grid"):
+            raise ValueError("unsupported market or strategy")
         for url, scheme in ((self.api_url, "https"), (self.ws_url, "wss")):
             if urlparse(url).scheme != scheme or not urlparse(url).hostname:
                 raise ValueError("API URLs must use TLS")

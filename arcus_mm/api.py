@@ -1,10 +1,12 @@
 import asyncio
 import json
+import os
 import time
 import uuid
 from decimal import Decimal as D
 import httpx
 from websockets.asyncio.client import connect
+from websockets_proxy import Proxy, proxy_connect
 from .models import Book, Market, Order, fmt, number
 from .signing import Signer
 
@@ -29,7 +31,11 @@ def daily_protection_quota(payload,server_seconds):
 class PublicAPI:
     def __init__(self,c,log):
         self.c,self.log=c,log
-        self.http=httpx.AsyncClient(base_url=c.api_url,timeout=8,follow_redirects=False)
+        # Keep proxy scope per service instance.  trust_env=False prevents a
+        # host-wide proxy from silently rerouting the other trading account.
+        self.proxy=os.environ.get("ARCUS_PROXY_URL") or None
+        self.http=httpx.AsyncClient(base_url=c.api_url,timeout=8,follow_redirects=False,
+                                    proxy=self.proxy,trust_env=False)
         self.book=None
         self.connected=False
         self.ready=set()
@@ -170,7 +176,11 @@ class PublicAPI:
     async def stream(self):
         while True:
             try:
-                async with connect(self.c.ws_url,ping_interval=15,ping_timeout=10,open_timeout=8,max_queue=1024) as ws:
+                ws_client=(proxy_connect(self.c.ws_url,proxy=Proxy.from_url(self.proxy),proxy_conn_timeout=8,
+                                         ping_interval=15,ping_timeout=10,open_timeout=8,max_queue=1024)
+                           if self.proxy else
+                           connect(self.c.ws_url,proxy=None,ping_interval=15,ping_timeout=10,open_timeout=8,max_queue=1024))
+                async with ws_client as ws:
                     self.connected=True; self.ready.clear(); self.book=None
                     for channel in ("bbo","trades"):
                         await ws.send(json.dumps(dict(type="subscribe",channel=channel,id=self.c.market)))
@@ -732,6 +742,11 @@ class Live:
                         self.update_order(row)
                     if o.status in TERMINAL or (not terminal and o.status=="OPEN"): return
                 except (ExchangeError,asyncio.TimeoutError):
+                    # The account socket can confirm the order while an already
+                    # in-flight REST lookup fails during exchange indexing.
+                    if o.status in TERMINAL or (not terminal and o.status=="OPEN"):
+                        self.log("order_confirmation_race_resolved",client_id=o.client_id,status=o.status)
+                        return
                     self.log("order_confirmation_read_failed",client_id=o.client_id)
                 next_poll=max(time.monotonic()+.5,self.api.cooldown)
             await asyncio.sleep(.05)

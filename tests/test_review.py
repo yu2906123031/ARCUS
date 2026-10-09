@@ -6,7 +6,7 @@ from dataclasses import replace
 from decimal import Decimal as D
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from arcus_mm.api import PublicAPI,Live,RateLimited,UncertainOrder
+from arcus_mm.api import ExchangeError,PublicAPI,Live,RateLimited,UncertainOrder
 from arcus_mm.config import Config
 from arcus_mm.engine import Engine
 from arcus_mm.models import Ledger,Quote,Order
@@ -67,3 +67,15 @@ class ExecutionReview(unittest.IsolatedAsyncioTestCase):
         self.v.c=replace(self.c,confirmation_seconds=.6)
         with self.assertRaises(UncertainOrder):await self.v.confirmed(o)
         self.api.get.assert_awaited_once()
+
+    async def test_websocket_confirmation_race_is_not_reported_as_read_failure(self):
+        o=self.order();o.status="ACK"
+        events=[]
+        self.v.log=lambda event,**fields:events.append((event,fields))
+        async def delayed_rest(*args):
+            o.status="OPEN"
+            raise ExchangeError("order is not indexed yet")
+        self.api.get=AsyncMock(side_effect=delayed_rest)
+        await self.v.confirmed(o)
+        self.assertNotIn("order_confirmation_read_failed",[event for event,_ in events])
+        self.assertIn("order_confirmation_race_resolved",[event for event,_ in events])

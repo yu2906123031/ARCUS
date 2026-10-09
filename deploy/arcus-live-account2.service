@@ -1,5 +1,5 @@
 [Unit]
-Description=ARCUS account1 SPY-USD live market maker
+Description=ARCUS account2 SPY-USD live market maker
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=600
@@ -9,9 +9,9 @@ StartLimitBurst=5
 Type=simple
 User=root
 WorkingDirectory=/root/ARCUS
-EnvironmentFile=/root/ARCUS/.env
+EnvironmentFile=/root/ARCUS/.env.account2
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/.hermes/hermes-agent/venv/bin/python3 -u -m arcus_mm run --config /root/ARCUS/mm_live_spy_account1.json --live --auto-resume --auto-restart --seconds 0 --flatten-on-exit
+ExecStart=/root/.hermes/hermes-agent/venv/bin/python3 -u -m arcus_mm run --config /root/ARCUS/mm_live_spy_account2.json --live --auto-resume --auto-restart --seconds 0 --flatten-on-exit
 Restart=on-failure
 RestartSec=30
 KillSignal=SIGINT

@@ -1,6 +1,6 @@
-# Arcus BTC-USD 独立做市机器人
+# ARCUS 多账户永续做市机器人
 
-Python 3.12，命令行默认纸面模式，使用真实 Arcus 行情。一键入口默认 BTC-USD 实盘：5 倍杠杆、100 美元资金计算上限、仅软件保护，持续运行直到手动停止。Mid 或 Grid 同一时间只运行一种。只借鉴 [treading-bot README 的职责拆分流程](https://github.com/dhruvamity/treading-bot)，代码独立编写，未复制该仓库源码。没有 autopilot、Telegram、多账户交易或对倒流程。
+Python 3.12，命令行默认纸面模式，使用真实 Arcus 行情。当前 Linux 实盘部署由两个隔离的 systemd 服务运行 SPY-USD：账号1直连，账号2使用进程级独立代理。每个实例拥有独立凭据、配置、日志目录和运行锁；Mid 或 Grid 同一实例只运行一种。
 
 **实验软件。回测和纸面结果不等于实盘收益。** 做市会承担逆向选择、资金费、滑点及持仓亏损；更多 maker 成交不保证盈利或低磨损。协议依据 [Arcus 官方认证文档](https://docs.arcus.xyz/api-reference/authentication)，详细核对结果见 [MM_PROTOCOL.md](docs/MM_PROTOCOL.md)。
 
@@ -21,10 +21,30 @@ tests/test_mm.py  离线测试
 docs/MM_PROTOCOL.md
 research/*.md    核对时保存的官方文档
 mm_logs/         运行生成的日志，已忽略
-mm_runtime.lock  单进程锁，已忽略
+<log_dir>/mm_runtime.lock  每实例运行锁，已忽略
 ~~~
 
-流程：配置 → REST 元数据/费用/时钟 → WS 订阅 → 账户核对与风控 → 目标报价 → 撤单确认 → ALO 下单 → 成交/订单回报 → 持仓与损益。实盘先核对 API key、确认杠杆设置、启用服务端 dead man's switch。
+流程：配置 → REST 元数据/费用/时钟 → WS 订阅 → 账户核对与风控 → 目标报价 → 撤单确认 → ALO 下单 → 成交/订单回报 → 持仓与损益。实盘先核对 API key、确认杠杆设置并启用保护。
+
+## 当前双账户部署
+
+| 实例 | 服务 | 市场 | 配置 | 网络 | 单笔名义金额 |
+|---|---|---|---|---|---:|
+| 账号1 | `arcus-live.service` | SPY-USD | `mm_live_spy_account1.json` | 直连 | $100–150 |
+| 账号2 | `arcus-live-account2.service` | SPY-USD | `mm_live_spy_account2.json` | 独立代理 | $60–100 |
+
+账号1使用2倍杠杆、25%权益仓位上限和1%权益止损；账号2使用5倍杠杆、40%权益仓位上限和0.6%权益止损。两套 SPY 策略使用1.4 bps基础半价差、0.45 bps起始重报价阈值、动量过滤和分侧毒性加宽。配置值是风险边界，实际订单金额在区间内随机化并受仓位预算限制。
+
+常用运维命令：
+
+~~~bash
+systemctl status arcus-live.service arcus-live-account2.service
+journalctl -u arcus-live.service -u arcus-live-account2.service -f
+python -m arcus_mm doctor --config mm_live_spy_account1.json --live
+python -m arcus_mm doctor --config mm_live_spy_account2.json --live
+~~~
+
+账号2仅通过服务环境中的 `ARCUS_PROXY_URL` 使用代理。HTTP 与 WebSocket 显式共享该代理，客户端关闭环境代理继承，避免影响账号1。代理认证信息只保存在受限环境文件中。
 
 新入口是 `python -m arcus_mm`。旧现货工具及动量纸面工具保留；旧 README 在 [LEGACY_README.md](docs/LEGACY_README.md)，旧永续说明在 [PERPS.md](PERPS.md)。
 
@@ -62,7 +82,7 @@ Ctrl-C 请求正常停止。默认停止撤单、保留持仓；`--flatten-on-ex
 | 字段 | 默认 | 含义 |
 |---|---:|---|
 | api_url / ws_url | 官方主网 | REST / WS 地址，必须启用 TLS |
-| market | BTC-USD | 当前仅支持此市场 |
+| market | BTC-USD | 支持 BTC-USD、SPY-USD；ETH-USD仅纸面模式 |
 | strategy | mid | mid 或 grid，CLI 可覆盖 |
 | spread_bps | 2 | 每侧到报价中心的距离，两侧总宽约 4 bps |
 | bias_bps | 0 | 中心上移为正，下移为负；允许 -3 至 +3 |
@@ -147,11 +167,11 @@ mm_logs/paper-*.jsonl 和 live-*.jsonl 记录每次下单、撤单、成交、�
 
 已完成完整离线回归与 Mid/Grid 真实行情纸面冒烟测试。没有使用真实账户下单验证；生产签名验收、成交、撤单及平仓表现仍需小资金测试确认。
 
-## ?????????
+## 本地监控面板
 
-?? `C:\Python312\python.exe -m arcus_mm run --dashboard`?????? http://127.0.0.1:8765 ?????????????????????????????????????????????????? `--flatten-on-exit` ????????? reduce-only ???`--port 8766` ??????????????????????????
+运行 `C:\Python312\python.exe -m arcus_mm run --dashboard` 后访问 `http://127.0.0.1:8765`。面板仅绑定本机地址，支持查看状态和请求正常停止；`--flatten-on-exit` 控制正常停止时是否执行 reduce-only 平仓。第二个本地实例可使用 `--port 8766`。
 
-???????? 8 ?????? TLS/????????? RTT ?? `clock_max_rtt_ms` ?????????? 5000 ms????????????????????????????????????????????????????
+所有 REST 与 WebSocket 连接使用 TLS。订单确认默认等待8秒；时钟采样会丢弃超过 `clock_max_rtt_ms` 的响应，综合偏差超过5000毫秒时触发风险停止。
 
 ## Quote refresh optimization
 
@@ -169,7 +189,7 @@ Run `C:\Python312\python.exe -m arcus_mm.compare --flatten-on-exit` or double-cl
 
 Fill `.env` in the project root using `.env.example` as the template. Only `--live` loads this file. Existing process environment variables take precedence; empty template values are ignored. Use the registered Ed25519 API seed, not the Ethereum wallet private key. `.env` and `.env.*` are ignored by version control except `.env.example`.
 
-Read-only account check: `C:\Python312\python.exe -m arcus_mm doctor --config mm_live_btc_100.json --live`.
+Read-only account check: `C:\Python312\python.exe -m arcus_mm doctor --config mm_live_spy_account1.json --live`.
 
 ## Confirming uncertain live requests
 
@@ -180,7 +200,7 @@ Explicit live recovery uses `--resume-log <prior live JSONL>` together with `--l
 
 ## Automatic live position recovery
 
-The one-click launcher enables `--auto-resume`. A flat account starts a new session. For an existing BTC position, startup selects the latest complete live log for the configured market/subaccount, replays fills and verifies the exact account position and sequence before trading. Cost basis, fees, volume and the original risk capital are preserved. Failed startup/doctor logs are skipped. Existing open orders, positions in other markets, missing logs, over 1000 fills or reconciliation mismatches still prevent startup. The read-only `--check` uses the same recovery checks without sending mutations. This option does not automatically restart a running or stopped process or remove runtime locks.
+The live launcher enables `--auto-resume`. A flat account starts a new session. For an existing position, startup selects the latest complete live log for the configured market/subaccount, replays fills and verifies the exact account position and sequence before trading. Cost basis, fees, volume and original risk capital are preserved. Failed startup/doctor logs are skipped. Existing foreign orders, positions in other markets, missing logs or reconciliation mismatches prevent startup. Runtime locks are scoped to each configured log directory.
 
 
 ## Live monitoring
