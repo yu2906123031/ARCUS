@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Arcus BTC-USD LIVE maker
+title ARCUS account1 SPY-USD LIVE maker
 set "PYTHONUTF8=1"
 set "MM_PYTHON="
 if exist "%~dp0.venv\Scripts\python.exe" set "MM_PYTHON=%~dp0.venv\Scripts\python.exe"
@@ -33,17 +33,17 @@ if not "%~1"=="" (
     set "MM_EXIT=1"
     goto finish
 )
-echo Arcus BTC-USD LIVE trading - real mainnet orders.
-echo Settings: mm_live_btc_100.json. Capital cap: USD 100. Leverage: 5x.
+echo ARCUS account1 SPY-USD LIVE trading - real mainnet orders.
+echo Settings: mm_live_spy_account1.json. Orders: USD 100-150. Leverage: 2x.
 echo Unclassified order denials: restart after verified cleanup. Default cooldown: 60s.
-echo Run time: until Ctrl+C. Logs: mm_logs/live-BTC-USD. Credentials: .env.
-echo Protection: software only. Server automatic cancel is disabled.
+echo Run time: until Ctrl+C. Logs: mm_logs/account1-SPY-USD. Credentials: .env.
+echo Protection: server fallback enabled with local risk controls.
 echo Ctrl+C requests a stop and reduce-only flattening. Do not close this window.
-"%MM_PYTHON%" -u -m arcus_mm run --config mm_live_btc_100.json --live --auto-resume --auto-restart --seconds 0 --flatten-on-exit
+"%MM_PYTHON%" -u -m arcus_mm run --config mm_live_spy_account1.json --live --auto-resume --auto-restart --seconds 0 --flatten-on-exit
 set "MM_EXIT=%ERRORLEVEL%"
 goto finish
 :doctor
-"%MM_PYTHON%" -u -m arcus_mm doctor --config mm_live_btc_100.json --live --auto-resume
+"%MM_PYTHON%" -u -m arcus_mm doctor --config mm_live_spy_account1.json --live --auto-resume
 set "MM_EXIT=%ERRORLEVEL%"
 :finish
 echo.

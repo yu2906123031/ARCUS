@@ -52,7 +52,7 @@ python -m arcus_mm doctor --config mm_live_spy_account2.json --live
 
 ### Windows 一键启动
 
-双击 [一键运行.bat](一键运行.bat)。脚本自动定位 Python 3.12、检查依赖，使用主网持续运行 BTC-USD 实盘交易，直到按 Ctrl-C 手动停止，结束时请求 reduce-only 平仓；配置读取 mm_live_btc_100.json，资金计算上限 100 美元、杠杆 5 倍，单笔名义金额为权益 10%、最大持仓名义金额为权益 25%、浮亏止损为启动权益 1%、断线容忍 5 秒、连续下单失败 2 次停止，日志写入 mm_logs/live-BTC-USD，密钥从环境变量或 .env 读取。Ctrl-C 请求正常停止，不要直接关闭窗口。已有进程时单进程锁会拒绝重复启动，不会自动删除锁或重启风险停止的会话。
+双击 [一键运行.bat](一键运行.bat) 启动账号1 SPY-USD 实盘。脚本自动定位 Python 3.12、检查依赖并读取 `mm_live_spy_account1.json`：单笔名义金额 $100–150、2倍杠杆、25%权益仓位上限、1%权益止损，日志写入 `mm_logs/account1-SPY-USD`，密钥从环境变量或 `.env` 读取。Ctrl-C 会请求撤单和 reduce-only 平仓。账号2由独立 systemd 服务与 `.env.account2` 管理。
 
 也可在终端运行 `".\一键运行.bat" --check`（cmd）进行实盘账户只读检查。双击脚本默认实盘，无需额外传入 --live。
 
@@ -143,7 +143,7 @@ BUY 与 SELL 分别计算最坏成交后的潜在持仓，计入未成交和待�
 
 doctor --live 只读检查，不发送变更或订单。run --live 才设置杠杆、启用保护并下单。paper=true 可被显式 --live 覆盖，移除 --live 就是纸面。
 
-服务端 dead man's switch 按 BTC 市场设置，约每断线阈值的三分之一刷新，提前 5 秒至 5 分钟。停止后保留已武装的开关作为后备；它只撤单，不平仓。API 完全不可达时不能保证止损平仓成功：非零退出并记录残仓或确认失败，需在官方网页处理。IOC 都是 reduce-only，部分平仓后继续，最多 10 次，平仓确认上限 60 秒。
+服务端 dead man's switch 按当前配置市场设置，约每断线阈值的三分之一刷新，提前5秒至5分钟。停止后保留已武装的开关作为后备；它只撤单，不平仓。API 完全不可达时无法保证止损平仓成功：程序会记录残仓或确认失败，需在官方网页处理。IOC 均为 reduce-only，部分平仓后继续，最多10次，平仓确认上限60秒。
 
 不明提交结果不会自动重发，HTTP ACK 不算成交。WS 重连重新订阅，账户、成交及 sequence 核对一致前不开新单，超时保持停止。订单/成交去重内存达到边界也会停止，不自动切换策略或重新部署。
 
@@ -226,14 +226,14 @@ Local disconnect handling remains 5 seconds in the live configuration. Server `p
 After shutdown cancellation, fill/account reconciliation and REST confirmation of no open orders, the bot disarms protection only if every tracked order is terminal and there is no uncertain mutation/fault. Failed cleanup or uncertain order results leave the server fallback armed. This avoids consuming an auto-fire for ordinary clean exits. Quota already spent today is unaffected and still waits for the next UTC day. The dashboard shows the renewal interval and remaining server deadline.
 
 
-## Software-only protection (current live launcher)
+## Live protection
 
-At the user's request, `mm_live_btc_100.json` now sets `server_protection: false`. Live startup confirms leverage and account consistency without arming or renewing `scheduleCancel`; the daily server auto-fire quota no longer gates trading. The software watchdog stops new orders and independently requests REST cancellation when its local fault thresholds trip. Cancellation retries definite pre-transmission failures and HTTP 429 for up to 60 seconds; uncertain mutations are not blindly resent. Stop-loss, position caps, authenticated Stop, startup account checks and restart recovery remain enabled. The dashboard explicitly labels software-only mode. A stopped/crashed process or a network outage affecting REST cannot guarantee cancellation; no server fallback exists in this mode. Re-enable `server_protection: true` to use server protection again. Restart normally to load these changes.
+两个当前 SPY 实盘配置均启用服务端 `scheduleCancel` 后备保护，同时保留本地断线、时钟、仓位、止损和连续失败风控。服务端后备负责撤单，本地退出路径负责 reduce-only 平仓。未确认的写请求不会盲目重发。
 
 
 ## Inventory-aware adaptive pricing
 
-The live BTC configuration keeps leverage at 5, per-order notional at 10% of risk equity and the position cap at 25%. Inventory shifts the quote center by up to 2 bps against the held position (long shifts down, short shifts up). Directional budgets, minimum sizes and reduce-only handling at the cap still apply.
+当前 SPY 配置使用明确的订单名义金额区间：账号1为 $100–150，账号2为 $80–150。库存偏移会推动报价向减仓方向移动，达到配置阈值后只保留减仓方向；方向预算、最小下单量和 reduce-only 限制持续生效。
 
 Fresh BBO mid prices are sampled at most once per second in a bounded 30-second window. After five samples, the RMS sampled return times 2, current half-book spread and the base 2 bps determine the half-spread, capped at 8 bps. This is a sampled price-change measure, not a forecast. Repricing scales from 0.5 to 2 bps; grid uses one level once the spread reaches twice the base. A fee floor covers positive maker fees plus 25% of the current taker fee; rebates do not narrow quotes. The fee floor can override the spread cap. This configurable reserve does not guarantee profitable fills. Funding data is not incorporated yet.
 
