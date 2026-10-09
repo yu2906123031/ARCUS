@@ -3,7 +3,7 @@
   "ws_url": "wss://api.arcus.xyz/v1/ws",
   "market": "SPY-USD",
   "strategy": "mid",
-  "spread_bps": "1.5",
+  "spread_bps": "1.3",
   "bias_bps": "0",
   "reprice_bps": "0.5",
   "inventory_skew_bps": "3",
