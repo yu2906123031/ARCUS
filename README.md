@@ -46,6 +46,8 @@ python -m arcus_mm doctor --config mm_live_spy_account2.json --live
 
 账号2仅通过服务环境中的 `ARCUS_PROXY_URL` 使用代理。HTTP 与 WebSocket 显式共享该代理，客户端关闭环境代理继承，避免影响账号1。代理认证信息只保存在受限环境文件中。
 
+账号2按 `America/New_York` 自动切换 SPY 基础半价差：休市1.3 bps、盘前盘后1.5 bps、09:25–10:00开盘窗口2.0 bps、常规时段1.5 bps、15:45–16:05收盘窗口1.8 bps。周末使用休市参数；时区库自动处理夏令时。开盘窗口的动量拦截阈值收紧至0.8 bps，EWMA波动率和分侧毒性溢价继续叠加，最终受4 bps动态上限约束。
+
 新入口是 `python -m arcus_mm`。旧现货工具及动量纸面工具保留；旧 README 在 [LEGACY_README.md](docs/LEGACY_README.md)，旧永续说明在 [PERPS.md](PERPS.md)。
 
 ## 安装与纸面运行

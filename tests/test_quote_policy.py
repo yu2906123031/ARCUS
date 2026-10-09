@@ -1,12 +1,54 @@
 import unittest
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal as D
+from zoneinfo import ZoneInfo
 from arcus_mm.config import Config, load
 from arcus_mm.strategy import QuotePolicy, targets, safe_resting, fair_value, inventory_shift
 from arcus_mm.models import Order
 from tests.test_mm import market, book
 
 class QuotePolicyTests(unittest.TestCase):
+    def test_spy_session_spread_handles_open_regular_close_and_dst(self):
+        ny=ZoneInfo("America/New_York")
+        c=replace(Config(),market="SPY-USD",adaptive_spread=True,session_spread_enabled=True,
+                  spread_bps="1.3",max_spread_bps="5")
+        cases=[
+            (datetime(2026,7,6,3,0,tzinfo=ny),"1.3","OFF_HOURS"),
+            (datetime(2026,7,6,8,0,tzinfo=ny),"1.5","EXTENDED"),
+            (datetime(2026,7,6,9,25,tzinfo=ny),"2.0","OPEN"),
+            (datetime(2026,7,6,10,30,tzinfo=ny),"1.5","REGULAR"),
+            (datetime(2026,7,6,15,50,tzinfo=ny),"1.8","CLOSE"),
+            (datetime(2026,7,6,17,0,tzinfo=ny),"1.5","EXTENDED"),
+            (datetime(2026,7,5,10,0,tzinfo=ny),"1.3","OFF_HOURS"),
+            (datetime(2026,12,7,9,30,tzinfo=ny),"2.0","OPEN"),
+        ]
+        for now,spread,session in cases:
+            with self.subTest(now=now):
+                policy=QuotePolicy(clock=lambda now=now:now)
+                effective=policy.effective(c,book())
+                self.assertEqual(D(effective.spread_bps),D(spread))
+                self.assertEqual(policy.state["market_session"],session)
+
+    def test_session_spread_is_opt_in_and_spy_only(self):
+        now=datetime(2026,7,6,9,30,tzinfo=ZoneInfo("America/New_York"))
+        policy=QuotePolicy(clock=lambda:now)
+        effective=policy.effective(replace(Config(),adaptive_spread=True),book())
+        self.assertEqual(D(effective.spread_bps),D(2))
+        self.assertEqual(policy.state["market_session"],"DISABLED")
+
+    def test_open_session_tightens_momentum_filter(self):
+        now=datetime(2026,7,6,9,30,tzinfo=ZoneInfo("America/New_York"))
+        c=replace(Config(),market="SPY-USD",adaptive_spread=True,session_spread_enabled=True,
+                  max_spread_bps="5",momentum_filter_enabled=True,momentum_threshold_bps="1.5",
+                  session_open_momentum_threshold_bps="0.8")
+        policy=QuotePolicy(clock=lambda:now)
+        for stamp,mid in ((1,"100000"),(2,"100000"),(3,"100000"),(4,"100009")):
+            b=book(str(D(mid)-1),str(D(mid)+1));b.received=stamp
+            policy.effective(c,b)
+        self.assertEqual(policy.state["momentum_threshold_bps"],D("0.8"))
+        self.assertEqual(policy.state["blocked_sides"],["SELL"])
+
     def test_inventory_moves_both_quotes_towards_reduction(self):
         c=replace(Config(),inventory_skew_bps="2",order_equity_fraction="0.2")
         neutral=targets(c,market(),book(),D(100),D(0))

@@ -24,6 +24,13 @@ class Config:
     volatility_multiplier: str = "2"
     volatility_mode: str = "rms"
     spread_decay_bps_per_second: str = "0"
+    session_spread_enabled: bool = False
+    session_off_hours_spread_bps: str = "1.3"
+    session_extended_spread_bps: str = "1.5"
+    session_open_spread_bps: str = "2"
+    session_regular_spread_bps: str = "1.5"
+    session_close_spread_bps: str = "1.8"
+    session_open_momentum_threshold_bps: str = "0.8"
     markout_max_lag_seconds: float = 1
     toxicity_enabled: bool = False
     toxicity_window_seconds: float = 300
@@ -88,6 +95,7 @@ class Config:
         if type(self.toxicity_min_samples) is not int or not 3<=self.toxicity_min_samples<=1000:
             raise ValueError("invalid toxicity_min_samples")
         if type(self.adaptive_spread) is not bool: raise ValueError("invalid adaptive_spread")
+        if type(self.session_spread_enabled) is not bool: raise ValueError("invalid session_spread_enabled")
         for name in ("inventory_skew_bps", "inventory_cubic_bps", "microprice_weight", "max_fair_shift_bps", "max_spread_bps", "max_reprice_bps", "volatility_multiplier", "exit_fee_reserve_fraction", "spread_decay_bps_per_second", "toxicity_threshold_bps", "toxicity_multiplier", "toxicity_max_premium_bps", "momentum_threshold_bps", "inventory_one_sided_ratio"):
             value=D(getattr(self,name))
             if not value.is_finite() or value<0: raise ValueError("invalid "+name)
@@ -97,6 +105,14 @@ class Config:
             raise ValueError("invalid microprice controls")
         if D(self.inventory_skew_bps)>4: raise ValueError("inventory skew must be <=4 bps")
         if not D(self.spread_bps)<=D(self.max_spread_bps)<=50: raise ValueError("invalid maximum spread")
+        session_spreads=[D(getattr(self,name)) for name in ("session_off_hours_spread_bps","session_extended_spread_bps",
+                         "session_open_spread_bps","session_regular_spread_bps","session_close_spread_bps")]
+        if any(not value.is_finite() or value<=0 for value in session_spreads): raise ValueError("invalid session spread")
+        if self.session_spread_enabled and (self.market!="SPY-USD" or max(session_spreads)>D(self.max_spread_bps)):
+            raise ValueError("session spread requires SPY-USD and sufficient max_spread_bps")
+        session_momentum=D(self.session_open_momentum_threshold_bps)
+        if not session_momentum.is_finite() or not D("0.1")<=session_momentum<=20:
+            raise ValueError("invalid session momentum threshold")
         if not D(self.reprice_bps)<=D(self.max_reprice_bps)<=D(self.max_spread_bps): raise ValueError("invalid maximum reprice")
         if not 0<D(self.volatility_multiplier)<=10: raise ValueError("invalid volatility multiplier")
         if D(self.spread_decay_bps_per_second)>10 or D(self.toxicity_multiplier)>10 or D(self.toxicity_max_premium_bps)>20:

@@ -1,7 +1,9 @@
 from decimal import Decimal as D
 from collections import deque
 from dataclasses import replace
+from datetime import datetime, time
 import secrets
+from zoneinfo import ZoneInfo
 from .models import BPS, Quote
 from .features import EWMAVolatility
 
@@ -21,7 +23,7 @@ def inventory_shift(c,ratio):
 
 class QuotePolicy:
     """Causal RMS/EWMA volatility, side-specific toxicity, and slow spread decay."""
-    def __init__(self):
+    def __init__(self,clock=None):
         self.samples=deque(maxlen=31)
         self.state={}
         self.ewma=EWMAVolatility()
@@ -31,6 +33,19 @@ class QuotePolicy:
         self.micro_since=0.
         self.micro_last_frame=-1.
         self.micro_confirmed=0
+        self.clock=clock or (lambda:datetime.now(ZoneInfo("America/New_York")))
+
+    def session_base(self,c):
+        if not c.session_spread_enabled or c.market!="SPY-USD": return D(c.spread_bps),"DISABLED"
+        now=self.clock().astimezone(ZoneInfo("America/New_York"))
+        if now.weekday()>=5:return D(c.session_off_hours_spread_bps),"OFF_HOURS"
+        current=now.time().replace(tzinfo=None)
+        if time(9,25)<=current<time(10):return D(c.session_open_spread_bps),"OPEN"
+        if time(10)<=current<time(15,45):return D(c.session_regular_spread_bps),"REGULAR"
+        if time(15,45)<=current<time(16,5):return D(c.session_close_spread_bps),"CLOSE"
+        if time(4)<=current<time(9,25) or time(16,5)<=current<time(20):
+            return D(c.session_extended_spread_bps),"EXTENDED"
+        return D(c.session_off_hours_spread_bps),"OFF_HOURS"
 
     def observe(self,c,book):
         self.ewma.observe(book,c.disconnect_seconds)
@@ -53,6 +68,7 @@ class QuotePolicy:
     def effective(self,c,book,maker_fee=D(0),taker_fee=D(0),toxicity=None):
         self.observe(c,book)
         now=book.received
+        base,market_session=self.session_base(c)
         while self.samples and now-self.samples[0][0]>30: self.samples.popleft()
         if not self.samples or now-self.samples[-1][0]>=1:
             self.samples.append((now,book.mid))
@@ -60,14 +76,15 @@ class QuotePolicy:
         anchors=[sample for sample in self.samples if now-sample[0]>=c.momentum_window_seconds]
         anchor=anchors[-1][1] if anchors else None
         momentum_bps=(book.mid/anchor-1)*BPS if anchor else D(0)
+        momentum_threshold=(D(c.session_open_momentum_threshold_bps) if market_session=="OPEN"
+                            else D(c.momentum_threshold_bps))
         blocked_sides=[]
-        if c.momentum_filter_enabled and abs(momentum_bps)>=D(c.momentum_threshold_bps):
+        if c.momentum_filter_enabled and abs(momentum_bps)>=momentum_threshold:
             blocked_sides=["SELL" if momentum_bps>0 else "BUY"]
         volatility=(sum((x*x for x in moves),D(0))/D(len(moves))).sqrt() if len(moves)>=4 else D(0)
         ewma=self.ewma.snapshot()
         if c.volatility_mode=="ewma":volatility=max(ewma.values())
         fee_floor=(max(D(0),maker_fee)+max(D(0),taker_fee)*D(c.exit_fee_reserve_fraction))*BPS
-        base=D(c.spread_bps)
         book_half=(book.ask-book.bid)/book.mid*BPS/2
         vol_premium=volatility*D(c.volatility_multiplier) if c.adaptive_spread else D(0)
         if c.adaptive_spread:
@@ -99,7 +116,9 @@ class QuotePolicy:
                         side_spreads_bps=sides,toxicity_premiums_bps=premiums,toxicity_samples=counts,regime=regime,
                         fee_floor_bps=fee_floor,samples=len(self.samples),strategy=strategy,
                         microprice_direction=self.micro_direction,microprice_confirmed=self.micro_confirmed,
-                        momentum_bps=momentum_bps,blocked_sides=blocked_sides,
+                        momentum_bps=momentum_bps,momentum_threshold_bps=momentum_threshold,
+                        blocked_sides=blocked_sides,market_session=market_session,
+                        session_base_spread_bps=base,
                         **fair_value(effective,book))
         return replace(effective,spread_bps=str(spread),reprice_bps=str(reprice),strategy=strategy)
 
