@@ -177,5 +177,7 @@ class QuotePolicyTests(unittest.TestCase):
         for position,side in ((cap*D(".3"),"SELL"),(-cap*D(".3"),"BUY")):
             qs=targets(c,market(),b,D(500),position)
             self.assertEqual({q.side for q in qs},{side})
+            self.assertTrue(all(q.reduce for q in qs))
+            self.assertLessEqual(sum(q.qty for q in qs),abs(position))
 
 if __name__=="__main__": unittest.main()
