@@ -31,6 +31,9 @@ class Config:
     session_regular_spread_bps: str = "1.5"
     session_close_spread_bps: str = "1.8"
     session_open_momentum_threshold_bps: str = "0.8"
+    competitive_quotes_enabled: bool = False
+    competitive_max_volatility_bps: str = "0.15"
+    competitive_quote_active: bool = False
     markout_max_lag_seconds: float = 1
     toxicity_enabled: bool = False
     toxicity_window_seconds: float = 300
@@ -96,6 +99,8 @@ class Config:
             raise ValueError("invalid toxicity_min_samples")
         if type(self.adaptive_spread) is not bool: raise ValueError("invalid adaptive_spread")
         if type(self.session_spread_enabled) is not bool: raise ValueError("invalid session_spread_enabled")
+        if type(self.competitive_quotes_enabled) is not bool or type(self.competitive_quote_active) is not bool:
+            raise ValueError("invalid competitive quotes")
         for name in ("inventory_skew_bps", "inventory_cubic_bps", "microprice_weight", "max_fair_shift_bps", "max_spread_bps", "max_reprice_bps", "volatility_multiplier", "exit_fee_reserve_fraction", "spread_decay_bps_per_second", "toxicity_threshold_bps", "toxicity_multiplier", "toxicity_max_premium_bps", "momentum_threshold_bps", "inventory_one_sided_ratio"):
             value=D(getattr(self,name))
             if not value.is_finite() or value<0: raise ValueError("invalid "+name)
@@ -113,6 +118,9 @@ class Config:
         session_momentum=D(self.session_open_momentum_threshold_bps)
         if not session_momentum.is_finite() or not D("0.1")<=session_momentum<=20:
             raise ValueError("invalid session momentum threshold")
+        competitive_volatility=D(self.competitive_max_volatility_bps)
+        if not competitive_volatility.is_finite() or not D("0.01")<=competitive_volatility<=5:
+            raise ValueError("invalid competitive volatility threshold")
         if not D(self.reprice_bps)<=D(self.max_reprice_bps)<=D(self.max_spread_bps): raise ValueError("invalid maximum reprice")
         if not 0<D(self.volatility_multiplier)<=10: raise ValueError("invalid volatility multiplier")
         if D(self.spread_decay_bps_per_second)>10 or D(self.toxicity_multiplier)>10 or D(self.toxicity_max_premium_bps)>20:

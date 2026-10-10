@@ -180,4 +180,18 @@ class QuotePolicyTests(unittest.TestCase):
             self.assertTrue(all(q.reduce for q in qs))
             self.assertLessEqual(sum(q.qty for q in qs),abs(position))
 
+    def test_competitive_quotes_join_bbo_only_in_calm_market(self):
+        now=datetime(2026,7,6,10,30,tzinfo=ZoneInfo("America/New_York"))
+        c=replace(Config(),market="SPY-USD",adaptive_spread=True,session_spread_enabled=True,
+                  competitive_quotes_enabled=True,competitive_max_volatility_bps="0.15",
+                  max_spread_bps="5",spread_bps="1")
+        policy=QuotePolicy(clock=lambda:now)
+        b=book("99.9","100.1")
+        effective=policy.effective(c,b)
+        self.assertTrue(effective.competitive_quote_active)
+        qs=targets(effective,market(),b,D(500),D(0))
+        self.assertEqual({q.side:q.price for q in qs},{"BUY":b.bid,"SELL":b.ask})
+        open_policy=QuotePolicy(clock=lambda:datetime(2026,7,6,9,30,tzinfo=ZoneInfo("America/New_York")))
+        self.assertFalse(open_policy.effective(c,b).competitive_quote_active)
+
 if __name__=="__main__": unittest.main()

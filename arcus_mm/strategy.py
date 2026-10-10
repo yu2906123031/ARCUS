@@ -110,6 +110,9 @@ class QuotePolicy:
         reprice=min(D(c.max_reprice_bps),D(c.reprice_bps)*spread/base) if c.adaptive_spread else D(c.reprice_bps)
         strategy="mid" if c.adaptive_spread and spread>=base*2 else c.strategy
         regime="TOXIC" if max(premiums.values())>0 else "FAST" if c.adaptive_spread and vol_premium>=base else "NORMAL"
+        competitive_active=(c.competitive_quotes_enabled and market_session in ("OFF_HOURS","EXTENDED","REGULAR")
+                            and volatility<=D(c.competitive_max_volatility_bps) and not any(premiums.values())
+                            and not blocked_sides)
         effective=self.confirmed_microprice_config(c,book)
         self.state=dict(spread_bps=spread,reprice_bps=reprice,volatility_bps=volatility,ewma_bps=ewma,
                         volatility_mode=c.volatility_mode,volatility_premium_bps=vol_premium,
@@ -118,9 +121,10 @@ class QuotePolicy:
                         microprice_direction=self.micro_direction,microprice_confirmed=self.micro_confirmed,
                         momentum_bps=momentum_bps,momentum_threshold_bps=momentum_threshold,
                         blocked_sides=blocked_sides,market_session=market_session,
-                        session_base_spread_bps=base,
+                        session_base_spread_bps=base,competitive_quote_active=competitive_active,
                         **fair_value(effective,book))
-        return replace(effective,spread_bps=str(spread),reprice_bps=str(reprice),strategy=strategy)
+        return replace(effective,spread_bps=str(spread),reprice_bps=str(reprice),strategy=strategy,
+                       competitive_quote_active=competitive_active)
 
 
 
@@ -156,6 +160,8 @@ def targets(c, market, book, equity, position, side_spreads=None, funding_reduce
             half_spread=D((side_spreads or {}).get(side,c.spread_bps))
             distance = half_spread*level/BPS
             px = market.price(center*(1-distance if side=="BUY" else 1+distance),side)
+            if c.competitive_quote_active and not reducing:
+                px=market.price(book.bid if side=="BUY" else book.ask,side)
             # An inventory shift must not remove the reducing side by crossing BBO.
             if reducing and inventory_exit:
                 # Keep the inventory exit passive while moving it to the front of the BBO.

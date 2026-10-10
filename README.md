@@ -48,6 +48,8 @@ python -m arcus_mm doctor --config mm_live_spy_account2.json --live
 
 账号1按 `America/New_York` 自动切换 SPY 基础半价差：休市1.0 bps、盘前盘后1.2 bps、09:25–10:00开盘窗口2.0 bps、常规时段1.3 bps、15:45–16:05收盘窗口1.6 bps。普通挂单最长保留60秒，减仓单20秒刷新；单边减仓订单强制 `reduce_only` 且数量不超过现有仓位。
 
+两账号在休市、盘前盘后和常规时段的低波动环境（EWMA不高于0.15 bps）启用竞争报价，直接加入当前最优买卖价队列。开盘、收盘、动量触发、毒性触发及高波动阶段自动退出竞争报价，恢复动态价差保护。
+
 账号2按 `America/New_York` 自动切换 SPY 基础半价差：休市0.8 bps、盘前盘后1.1 bps、09:25–10:00开盘窗口2.0 bps、常规时段1.2 bps、15:45–16:05收盘窗口1.5 bps。周末使用休市参数；时区库自动处理夏令时。开盘窗口的动量拦截阈值收紧至0.8 bps，EWMA波动率和分侧毒性溢价继续叠加，最终受4 bps动态上限约束。普通挂单最长保留60秒以提高队列优先级，减仓单20秒刷新。仓位进入单边减仓区后，减仓订单强制 `reduce_only` 且数量不超过现有仓位，防止减仓成交后反向开仓。
 
 新入口是 `python -m arcus_mm`。旧现货工具及动量纸面工具保留；旧 README 在 [LEGACY_README.md](docs/LEGACY_README.md)，旧永续说明在 [PERPS.md](PERPS.md)。
