@@ -1,6 +1,6 @@
 [Unit]
-Description=Restart ARCUS accounts for weekday/weekend market switch
+Description=Restart ARCUS account1 for weekday/weekend market switch
 
 [Service]
 Type=oneshot
-ExecStart=/bin/systemctl restart arcus-live.service arcus-live-account2.service
+ExecStart=/bin/systemctl restart arcus-live.service

@@ -1,0 +1,12 @@
+[Unit]
+Description=Switch ARCUS account2 to SPY during US extended hours and BTC otherwise
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 04:00:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 20:00:00 America/New_York
+Persistent=true
+AccuracySec=1s
+Unit=arcus-account2-market-switch.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart ARCUS account2 for SPY/BTC session switch
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart arcus-live-account2.service
