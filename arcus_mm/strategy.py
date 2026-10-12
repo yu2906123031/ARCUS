@@ -110,7 +110,9 @@ class QuotePolicy:
         reprice=min(D(c.max_reprice_bps),D(c.reprice_bps)*spread/base) if c.adaptive_spread else D(c.reprice_bps)
         strategy="mid" if c.adaptive_spread and spread>=base*2 else c.strategy
         regime="TOXIC" if max(premiums.values())>0 else "FAST" if c.adaptive_spread and vol_premium>=base else "NORMAL"
-        competitive_active=(c.competitive_quotes_enabled and market_session in ("OFF_HOURS","EXTENDED","REGULAR")
+        competitive_session=(market_session in ("OFF_HOURS","EXTENDED","REGULAR")
+                             or (market_session=="DISABLED" and c.market in ("BTC-USD","ETH-USD")))
+        competitive_active=(c.competitive_quotes_enabled and competitive_session
                             and volatility<=D(c.competitive_max_volatility_bps) and not any(premiums.values())
                             and not blocked_sides)
         effective=self.confirmed_microprice_config(c,book)

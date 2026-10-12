@@ -1,0 +1,24 @@
+[Unit]
+Description=ARCUS account2 weekday SPY / weekend BTC live market maker
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ARCUS
+EnvironmentFile=/root/ARCUS/.env.account2
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/ARCUS/run_account2_by_weekday.sh
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=45
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

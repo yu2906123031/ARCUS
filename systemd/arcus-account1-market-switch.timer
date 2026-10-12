@@ -1,0 +1,12 @@
+[Unit]
+Description=Switch ARCUS account1 between SPY weekdays and BTC weekends
+
+[Timer]
+OnCalendar=Mon *-*-* 00:00:00
+OnCalendar=Sat *-*-* 00:00:00
+Persistent=true
+AccuracySec=1s
+Unit=arcus-account1-market-switch.service
+
+[Install]
+WantedBy=timers.target

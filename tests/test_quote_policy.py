@@ -194,4 +194,16 @@ class QuotePolicyTests(unittest.TestCase):
         open_policy=QuotePolicy(clock=lambda:datetime(2026,7,6,9,30,tzinfo=ZoneInfo("America/New_York")))
         self.assertFalse(open_policy.effective(c,b).competitive_quote_active)
 
+    def test_competitive_quotes_join_bbo_for_24_7_crypto_market(self):
+        c=replace(Config(),market="BTC-USD",adaptive_spread=True,
+                  competitive_quotes_enabled=True,competitive_max_volatility_bps="0.25",
+                  max_spread_bps="5",spread_bps="1.2")
+        policy=QuotePolicy()
+        b=book("82789.9","82790.0")
+        effective=policy.effective(c,b)
+        self.assertEqual(policy.state["market_session"],"DISABLED")
+        self.assertTrue(effective.competitive_quote_active)
+        qs=targets(effective,market(),b,D(500),D(0))
+        self.assertEqual({q.side:q.price for q in qs},{"BUY":b.bid,"SELL":b.ask})
+
 if __name__=="__main__": unittest.main()
