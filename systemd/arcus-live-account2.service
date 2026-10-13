@@ -1,5 +1,5 @@
 [Unit]
-Description=ARCUS account2 weekday SPY / weekend BTC live market maker
+Description=ARCUS account2 US-session SPY / off-hours BTC live market maker
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=600
